@@ -53,3 +53,39 @@ Typography / rate-input refinement: larger consistent Segoe UI sizing, clearer l
 Final typography/input release: 131 tests passed in 42.90s, including real keyboard entry, plus/minus mode selection and invalid-text preservation. Percentage text rendered visibly at 1060x760. Frozen app modules match final source; packaged startup passed with an empty database. No production inventory sent during testing.
 
 Popup/grid/icon refinement: custom worksheet/profile pickers with 440px minimum width, readable selection controls and secondary Cancel; mapping dialog with explicit Save mapping, 56px rows and fully contained 42px editors. Corrected table-item padding that cropped cell widgets. Unified grey grid headers, row borders and status pills. Replaced navigation with high-resolution outline icons and a simplified circular gem logo. Full offline suite: 133 passed in 54.43s; final popup containment checks: 2 passed in 5.04s. Rendered and inspected picker, mapping dialog, history and collapsed navigation. No production uploads during testing.
+Final popup/grid/icon release: all 133 offline tests passed; focused popup containment tests passed. Frozen application modules match final source. Final mapping and history layouts inspected after clipping fixes. Packaged startup with the newly bundled SVG renderer passed using an empty database with a bounded initialization wait. No production inventory sent during testing.
+
+## Version 0.6.1 updater validation (2026-10-24)
+
+- 157 Python tests passed, including 24 updater tests; HTTP inventory tests mocked.
+- 10 update website tests passed: real Ed25519 verification plus mocked storage API
+  behavior, release validation, authorization expiry and version ordering.
+- Website dependency audit: 0 vulnerabilities after updating the Zod override.
+- Full frozen module comparison matched every drc_sync module to tested source.
+- Staged Windows app and isolated installer-installed app launched successfully
+  using empty isolated databases; executable hashes matched.
+- Inno Setup SmokeTest compilation installed the same packaged payload while
+  excluding real shortcuts, startup changes and uninstall registration.
+- Production installer built separately with normal per-user startup/shortcut
+  choices and cooperative update handoff; no forced process termination.
+- Existing production app, profiles, history and Credential Manager were not
+  modified during tests. No DRC production inventory requests made.
+
+Delivery build is 0.6.1. Final real Windows handoff testing checks the parent exit,
+.NET SHA-256 verification and installer arguments without PowerShell module dependencies.
+
+Final delivery verification: version 0.6.1 was published to the connected Vercel
+Blob store through an OIDC-compatible presigned upload. The live signed feed
+selected 0.6.1 for an older client and no update for the current version. A full
+public Blob download passed SHA-256/size verification against the local installer.
+The website Download for Windows link points to the signed release's installer URL.
+
+## Version 0.6.2 branding cleanup (2026-10-25)
+
+160 tests passed. Packaged modules matched source. The delivery folder contains
+only ChintamaniGems.exe and ChintamaniGems.ico at its root, with dependencies in
+_internal; no duplicate DRCInventorySync.exe is bundled. An isolated installer
+test supplied the old DRCInventorySync directory and confirmed redirection to
+ChintamaniGems, removal of an obsolete launcher fixture, and successful app launch.
+Legacy data and credential identities remain compatible. No production inventory
+requests were made. Shortcut/startup cleanup is scoped to known obsolete names.

@@ -56,7 +56,7 @@ python -m pytest -q
 powershell -ExecutionPolicy Bypass -File packaging/build.ps1
 ```
 
-The executable is `dist\DRCInventorySync\ChintamaniGems.exe`; distribute the entire folder. Optionally compile `packaging\installer.iss` with Inno Setup 6. The installer offers sign-in launch. Build on a Python 3.12+ Windows environment for the supported release. No Python installation is needed on the recipient's machine. Signing and installer compilation require your own Windows signing certificate and Inno Setup installation.
+The executable is `dist-next\ChintamaniGems\ChintamaniGems.exe`; distribute the entire folder. Optionally compile `packaging\installer.iss` with Inno Setup 6. The installer offers sign-in launch. Build on a Python 3.12+ Windows environment for the supported release. No Python installation is needed on the recipient's machine. Signing and installer compilation require your own Windows signing certificate and Inno Setup installation.
 
 
 Reopening behavior: launching the executable again signals the existing app to restore its window, while keeping a single background worker. Single-click or double-click the Chintamani Gems tray icon to open it as well.
@@ -68,3 +68,14 @@ Chintamani Gems branding uses an original faceted gemstone mark in SVG, PNG and 
 Sidebar navigation includes Dashboard, Excel Mapping, Change Rates and History. Collapse or expand the sidebar; its state persists across restarts. Activity details, result filters and response viewing are on History. Change Rates lists supported websites as independent rows. Increases are limited to 100%, discounts to 99.99%. Legacy invalid saved percentages remain intact and require an explicit valid correction before uploads; the app does not silently clamp them. The rate table shows only the website, sign controls, percentage, saved status and Save action.
 
 Popups use consistent white layouts with secondary Cancel actions. The column-mapping dialog uses taller rows and explicit Skip column placeholders. Data tables use grey headers, fine grid borders and result badges; sidebar navigation uses matching outline icons and a simplified circular gem mark.
+
+## Automatic updates — version 0.6.0
+
+The delivery installer is `release/ChintamaniGemsSetup-0.6.2.exe`.
+Install it once to add automatic release checks and verified downloads.
+Future updates appear in the sidebar as **Install update**. Installation waits
+for inventory processing to stop safely and requires **Install and restart**.
+See [UPDATES.md](UPDATES.md) for release publishing and signing-key backup details.
+
+Delivery build is 0.6.2. Final real Windows handoff testing checks the parent exit,
+.NET SHA-256 verification and installer arguments without PowerShell module dependencies.

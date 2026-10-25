@@ -118,6 +118,7 @@ class Worker(QThread):
                 if force:
                     manual_profiles.update(p['id'] for p in profiles)
                 for p in profiles:
+                    if self.isInterruptionRequested(): break
                     force_profile = p['id'] in manual_profiles
                     if self.paused or (not p.get('enabled', True) and not force_profile):
                         continue
@@ -155,11 +156,11 @@ class Worker(QThread):
                         detail = 'Workbook unavailable or invalid (' + type(exc).__name__ + '). Check sheet, mapping, cells and file access.'
                         store.error(p['id'], detail)
                         self.changed.emit(detail)
-                if not self.paused:
+                if not self.paused and not self.isInterruptionRequested():
                     jobs = store.db.execute("SELECT * FROM jobs WHERE manual=0 AND state IN ('pending','retry') AND due<=? ORDER BY id", (time.time(),)).fetchall()
                     for job in jobs:
                         profile = next((p for p in profiles if p['id']==job['profile']), None)
-                        if self.paused: break
+                        if self.paused or self.isInterruptionRequested(): break
                         if profile and (profile.get('enabled', True) or profile['id'] in manual_profiles):
                             try:
                                 try:
@@ -217,6 +218,7 @@ class Window(QMainWindow):
             button.setChecked(number == index); button.setIcon(nav_icon(number, '#1684e8' if number == index else '#334155'))
 
     def set_sidebar_collapsed(self, collapsed, persist=True):
+        self.update_button.setToolButtonStyle(Qt.ToolButtonIconOnly if collapsed else Qt.ToolButtonTextBesideIcon)
         self.sidebar_collapsed = bool(collapsed); self.sidebar.setFixedWidth(64 if collapsed else 224); self.sidebar_brand.setVisible(not collapsed)
         self.sidebar.layout().setContentsMargins(8 if collapsed else 12,20,8 if collapsed else 12,14)
         for button in self.nav_buttons:
@@ -569,6 +571,7 @@ class Window(QMainWindow):
         if QSystemTrayIcon.isSystemTrayAvailable(): self.hide(); event.ignore()
         else: self.exit(); event.accept()
     def exit(self):
+        if hasattr(self, 'updater'): self.updater.stop()
         self.worker.requestInterruption(); self.worker.wait(); self.tray.hide(); QApplication.quit()
 
 def main():
@@ -595,6 +598,12 @@ def main():
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('ChintamaniGems.Inventory')
     app.setQuitOnLastWindowClosed(False)
+    # Inno Setup checks this mutex and never force-closes a running sync worker.
+    mutex = None
+    if os.name == 'nt':
+        ctypes.windll.kernel32.CreateMutexW.restype = ctypes.c_void_p
+        ctypes.windll.kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Local\\ChintamaniGemsInventory')
     root = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'DRCInventorySync'
     root.mkdir(parents=True,exist_ok=True)
     instance = Instance(root)
@@ -603,11 +612,15 @@ def main():
             QMessageBox.information(None, 'App is starting', 'The app is still starting or an older version is running. Open it from the Chintamani Gems tray icon, or exit that copy and reopen this version.')
         return
     window = Window(root/'sync.db')
+    if getattr(sys, 'frozen', False) and os.environ.get('CHINTAMANI_DISABLE_UPDATES') != '1':
+        from .update_ui import UpdateController
+        window.updater = UpdateController(window, root/'updates')
     if not startup or not QSystemTrayIcon.isSystemTrayAvailable(): window.show()
     instance.activated.connect(window.open_window)
     try:
         app.exec()
     finally:
         instance.close()
+        if mutex: ctypes.windll.kernel32.CloseHandle(mutex)
 
 if __name__ == '__main__': main()

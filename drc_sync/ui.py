@@ -3,7 +3,7 @@ from PySide6.QtCore import Qt, QSize, Signal, QLocale, QByteArray
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QPen, QColor, QDoubleValidator, QValidator
 from PySide6.QtWidgets import (QWidget, QFrame, QLabel, QVBoxLayout, QHBoxLayout,
     QPushButton, QToolButton, QButtonGroup, QStackedWidget, QComboBox, QDoubleSpinBox,
-    QLineEdit, QPlainTextEdit, QTableWidget, QAbstractItemView, QSizePolicy, QHeaderView, QAbstractSpinBox)
+    QLineEdit, QPlainTextEdit, QTableWidget, QAbstractItemView, QSizePolicy, QHeaderView, QAbstractSpinBox, QStyle)
 from PySide6.QtSvg import QSvgRenderer
 import json
 from .brand import brand_pixmap
@@ -114,7 +114,10 @@ def build_ui(w):
     for index,name in enumerate(w.page_names):
         button=QToolButton();button.setObjectName('nav');button.setText(name);button.setToolTip(name);button.setAccessibleName(name);button.setCheckable(True);button.setIconSize(QSize(22,22));button.setMinimumHeight(44);button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         side.addWidget(button);w.nav_buttons.append(button);w.nav_group.addButton(button,index)
-    side.addStretch();w.collapse_button=QPushButton('Collapse sidebar');w.collapse_button.setObjectName('quiet');w.collapse_button.clicked.connect(lambda:w.set_sidebar_collapsed(not w.sidebar_collapsed));side.addWidget(w.collapse_button)
+    side.addStretch()
+    from .version import VERSION
+    w.update_button=QToolButton();w.update_button.setText('Check for updates');w.update_button.setIcon(w.style().standardIcon(QStyle.SP_BrowserReload));w.update_button.setMinimumHeight(38);w.update_button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed);w.update_button.setObjectName('quiet');w.update_button.setToolTip('Chintamani Gems '+VERSION);side.addWidget(w.update_button)
+    w.collapse_button=QPushButton('Collapse sidebar');w.collapse_button.setObjectName('quiet');w.collapse_button.clicked.connect(lambda:w.set_sidebar_collapsed(not w.sidebar_collapsed));side.addWidget(w.collapse_button)
     root.addWidget(w.sidebar)
     content=QWidget();main=QVBoxLayout(content);main.setContentsMargins(24,24,24,24);main.setSpacing(22);root.addWidget(content,1)
     header=QHBoxLayout();w.page_title=label('Dashboard','pageTitle');header.addWidget(w.page_title);header.addStretch();w.monitor_badge=label('Monitoring','badge');header.addWidget(w.monitor_badge);main.addLayout(header)
