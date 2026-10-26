@@ -1,1 +1,1 @@
-dbc598bfcea2e8e6792574adbabf6431e778780b88920900a752d21e4a1e43f9  ChintamaniGemsSetup-0.6.2.exe
+5f785e7ffb75194fc7dd74ab20a040583ba9a5b6d3ddf04767f3ae73936c48a3  ChintamaniGemsSetup-0.6.3.exe

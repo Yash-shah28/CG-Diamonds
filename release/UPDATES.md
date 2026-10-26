@@ -1,6 +1,6 @@
-# Automatic updates (0.6.2)
+# Automatic updates (0.6.3)
 
-Clients need to install ChintamaniGemsSetup-0.6.2.exe once to receive the updater.
+Clients need to install ChintamaniGemsSetup-0.6.3.exe once to receive the updater.
 Older portable builds do not contain an updater and cannot discover this release.
 After installation the app checks https://chintamani-updates.vercel.app/api/latest
 15 seconds after startup and every six hours. Check for updates is available at
@@ -12,12 +12,13 @@ The installer runs per user without administrator access. App files install in
 %LOCALAPPDATA%\Programs\ChintamaniGems. Profiles/history remain in the existing
 %LOCALAPPDATA%\DRCInventorySync\sync.db and API keys stay in Windows Credential
 Manager. Update installation preserves the startup and shortcut choices recorded
-by the installer. DRC inventory credentials are never sent to the update website.
+by the installer. Runtime update checks do not send DRC credentials. The customer installer carries
+a wrapped shared-credential payload for automatic local provisioning.
 
 Build: powershell -ExecutionPolicy Bypass -File packaging/build.ps1
 Requires .venv312 with project dev dependencies and Inno Setup 6.
 Bump drc_sync/version.py, pyproject.toml and packaging/installer.iss together.
-Test before publishing. Version numbers use three numeric components (e.g. 0.6.2).
+Test before publishing. Version numbers use three numeric components (e.g. 0.6.3).
 
 Publishing source is in the separate sibling repository ../chintamani-updates.
 Use its documented npm run publish-release command. Only the signed installer
@@ -37,3 +38,7 @@ required on client PCs.
 Only ChintamaniGems.exe is delivered. The legacy DRC-named data directory and
 Credential Manager service remain internal compatibility identifiers so existing
 connections, credentials and history continue to work. They are not a second app.
+
+The customer installer now provisions the shared Natural and Lab Grown keys
+automatically into Windows Credential Manager. No key entry or readable key file
+is needed. See MANAGED_CREDENTIALS.md for provisioning and its security limits.

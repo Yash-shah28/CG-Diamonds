@@ -19,7 +19,7 @@ Close the window to keep monitoring in the tray. Use the tray Exit command to st
 
 1. Open **Excel Mapping**. Under **Natural Diamonds**, choose **Connect / replace Excel**, select the worksheet and review the suggested column mappings. Repeat under **Lab Grown Diamonds** for its separate workbook. Each type has one connected file; replacements retain history and the existing contract settings.
 2. Use **Edit column mapping** to adjust a connected workbook. Leave unused target fields blank. The inventory type is fixed by the selected connection and determines the outgoing Diamond Type and credential slot.
-3. Natural and Lab Grown keep separate API keys in Windows Credential Manager. Existing credentials are retained when replacing a workbook or updating the app.
+3. The customer installer automatically provisions the shared Natural and Lab Grown keys into Windows Credential Manager. No key entry is required. Replacing a workbook preserves credential setup; shared keys are managed by installer releases.
 4. Open **Dashboard** to see results, last successful import, last failure and last sent upload. Filter history and select **View selected response**, or double-click a history row. DRC's successful queue acknowledgement displays **Sent to DRC** and triggers a Windows notification. It confirms delivery for processing, rather than a completed import.
 5. Saving a connected Excel file sends a fresh snapshot after a stable interval, including unchanged inventory values. The app starts in the tray at Windows sign-in and resumes monitoring saved connections. Opening the app establishes the initial file state without uploading. Close keeps monitoring in the tray; Pause and Exit stop monitoring. Unknown results remain Needs review, and save-triggered requests never retry automatically.
 
@@ -63,7 +63,7 @@ Reopening behavior: launching the executable again signals the existing app to r
 
 
 
-Chintamani Gems branding uses an original faceted gemstone mark in SVG, PNG and multi-resolution ICO formats under `drc_sync/assets`. The dashboard, Excel connections, rate table and History page use a light blue and white theme. The internal data directory, credential service and single-instance identity retain their existing names to preserve all saved connections and history. The previous executable filename remains a compatibility launcher for existing shortcuts.
+Chintamani Gems branding uses an original faceted gemstone mark in SVG, PNG and multi-resolution ICO formats under `drc_sync/assets`. The dashboard, Excel connections, rate table and History page use a light blue and white theme. The internal data directory, credential service and single-instance identity retain their existing names to preserve all saved connections and history. Only ChintamaniGems.exe is delivered; obsolete launcher names are removed by setup.
 
 Sidebar navigation includes Dashboard, Excel Mapping, Change Rates and History. Collapse or expand the sidebar; its state persists across restarts. Activity details, result filters and response viewing are on History. Change Rates lists supported websites as independent rows. Increases are limited to 100%, discounts to 99.99%. Legacy invalid saved percentages remain intact and require an explicit valid correction before uploads; the app does not silently clamp them. The rate table shows only the website, sign controls, percentage, saved status and Save action.
 
@@ -71,11 +71,15 @@ Popups use consistent white layouts with secondary Cancel actions. The column-ma
 
 ## Automatic updates — version 0.6.0
 
-The delivery installer is `release/ChintamaniGemsSetup-0.6.2.exe`.
+The delivery installer is `release/ChintamaniGemsSetup-0.6.3.exe`.
 Install it once to add automatic release checks and verified downloads.
 Future updates appear in the sidebar as **Install update**. Installation waits
 for inventory processing to stop safely and requires **Install and restart**.
 See [UPDATES.md](UPDATES.md) for release publishing and signing-key backup details.
 
-Delivery build is 0.6.2. Final real Windows handoff testing checks the parent exit,
+Delivery build is 0.6.3. Final real Windows handoff testing checks the parent exit,
 .NET SHA-256 verification and installer arguments without PowerShell module dependencies.
+
+The customer installer now provisions the shared Natural and Lab Grown keys
+automatically into Windows Credential Manager. No key entry or readable key file
+is needed. See MANAGED_CREDENTIALS.md for provisioning and its security limits.

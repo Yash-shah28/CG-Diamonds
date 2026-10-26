@@ -575,6 +575,24 @@ class Window(QMainWindow):
         self.worker.requestInterruption(); self.worker.wait(); self.tray.hide(); QApplication.quit()
 
 def main():
+    if '--provision-credentials' in sys.argv:
+        from .credentials import provision_shared_credentials
+        try:
+            if not provision_shared_credentials(): raise RuntimeError()
+        except Exception:
+            raise SystemExit(2) from None
+        return
+    if '--credential-self-test' in sys.argv:
+        from .credentials import credential_self_test
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--credential-self-test', action='store_true')
+        parser.add_argument('--diagnostics-output', required=True)
+        args = parser.parse_args()
+        report = credential_self_test()
+        Path(args.diagnostics_output).write_text(json.dumps(report, indent=2), encoding='utf-8')
+        if not report['ok']: raise SystemExit(2)
+        return
     if '--diagnose' in sys.argv:
         import argparse
         import threading

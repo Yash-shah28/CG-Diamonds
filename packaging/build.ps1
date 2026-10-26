@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
     if (-not $SkipFreeze) {
+        & .\.venv312\Scripts\python.exe packaging\generate_credentials.py
+        if ($LASTEXITCODE -ne 0) { throw 'Shared credential packaging failed' }
         & .\.venv312\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist-next ChintamaniGems.spec
         if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
     }

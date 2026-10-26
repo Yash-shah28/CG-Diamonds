@@ -89,3 +89,24 @@ test supplied the old DRCInventorySync directory and confirmed redirection to
 ChintamaniGems, removal of an obsolete launcher fixture, and successful app launch.
 Legacy data and credential identities remain compatible. No production inventory
 requests were made. Shortcut/startup cleanup is scoped to known obsolete names.
+
+## Version 0.6.3 managed customer credentials (2026-10-25)
+
+Shared Natural/Lab Grown credentials are provisioned into Windows Credential
+Manager without a client key-entry screen. The installer's provisioning operation
+is offline; runtime reads enforce the packaged shared credential set. The wrapped
+payload is compiled into the application; no readable credential config is shipped.
+This does not make credentials extraction-proof against a determined local user.
+
+The full suite passed (167 tests), followed by the additional corrupt-bundle test
+and all eight credential tests passing. Frozen modules matched source. Packaged
+fresh-store self-test passed using an in-memory store with zero network requests.
+The packaged real Windows provisioning command returned success and preserved the
+existing matching approved credentials. Shared values matched the build machine's
+approved set; scanning the packaged output found no plaintext credential values.
+No production inventory requests were sent during development or verification.
+The isolated installer-installed executable also passed its fresh-machine
+credential self-test with both inventory types, idempotent provisioning, zero
+requests, no plaintext credential file and no real test credential-store writes.
+Smoke installer mutex was isolated from the running production app; the production
+installer retains its normal application mutex and offline setup callback.
