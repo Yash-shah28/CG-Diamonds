@@ -118,6 +118,16 @@ def parse_excel(profile):
         mapping = profile['mapping']
         if not mapping or len(set(mapping.values())) != len(mapping):
             raise WorkbookValidationError('Column mapping is empty or assigns multiple Excel columns to the same API field. Correct Excel Mapping.')
+        header_map = {h.strip().lower(): h for h in headers if h}
+        normalized_mapping = {}
+        for column, field in mapping.items():
+            if column in headers:
+                normalized_mapping[column] = field
+            elif column.strip().lower() in header_map:
+                normalized_mapping[header_map[column.strip().lower()]] = field
+            else:
+                normalized_mapping[column] = field
+        mapping = normalized_mapping
         for column in mapping:
             if headers.count(column) != 1:
                 raise WorkbookValidationError(f"Column '{column}' is missing. Update Excel Mapping to match the workbook headers." if headers.count(column) == 0 else f"Column '{column}' appears more than once. Give each Excel header a unique name.")
@@ -175,6 +185,8 @@ def parse_excel(profile):
                 record['Diamond Type'] = expected_type
             for field in profile.get('required', []):
                 if record.get(field) in (None, ''):
+                    if field == 'Color' and record.get('Fancy Color'):
+                        continue
                     raise WorkbookValidationError(f"Row {number}: missing {field}. Fill the mapped cell or map the correct Excel column.")
             result.append(record); source_rows.append(number)
         if not result:

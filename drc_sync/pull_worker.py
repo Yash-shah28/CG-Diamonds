@@ -183,12 +183,11 @@ class PullWorker(QThread):
                         path=Path(p['path']).resolve()
                         if str(path.parent) not in watched and path.parent.is_dir():observer.schedule(FileEvents(events),str(path.parent),recursive=False);watched.add(str(path.parent))
                         sig=(path.stat().st_size,path.stat().st_mtime_ns,json.dumps(p,sort_keys=True));name=p['id']
-                        if name not in signatures and not force:
-                            signatures[name]=sig;stable.ready(name,sig,time.monotonic());continue
                         if str(path) in dirty:stable.states.pop(name,None)
-                        if not stable.ready(name,sig,time.monotonic()) and not force:continue
+                        if not force and not stable.ready(name,sig,time.monotonic()):continue
                         if force or signatures.get(name)!=sig:
                             store.cache(p,self.parse_profile(p));signatures[name]=sig
+                            store.db.execute("DELETE FROM errors WHERE profile=?", (name,));store.db.commit()
                             errors=store.queue_for_kind(p['kind'])
                             for detail in errors:self.problem.emit(name,detail)
                             self.changed.emit('Workbook validated: '+path.name)

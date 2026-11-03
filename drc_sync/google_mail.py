@@ -110,7 +110,7 @@ def send_invitation(company, key, api_url, pdf_bytes, http=None, credential_prov
     falling back to OAuth REST API if explicitly requested or if OAuth credentials exist and SMTP password is not set.
     """
     app_pw = portal_secrets.get_secret('google-smtp-password')
-    if not use_oauth and app_pw:
+    if not use_oauth and not credential_provider and app_pw:
         return send_smtp_invitation(company, key, api_url, pdf_bytes, sender=sender, password=app_pw)
 
     # Fallback to OAuth if credentials provided or OAuth explicitly requested

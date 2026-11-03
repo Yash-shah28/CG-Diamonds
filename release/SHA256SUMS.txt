@@ -1,3 +1,4 @@
 5f785e7ffb75194fc7dd74ab20a040583ba9a5b6d3ddf04767f3ae73936c48a3  ChintamaniGemsSetup-0.6.3.exe
 8af1153ad2af729b52f18ae869ce9f4220794f4d92c0b86a8ef695c10d4ec08a  ChintamaniGemsSetup-0.7.0.exe
 1d94b2d5939e6d3fe8eafbf2629d9b9f6b9f10481bf1adb5b588b45105c0c9a1  ChintamaniGemsSetup-0.7.1.exe
+021e2e0d7a789216d85602d5f4a6cd83c6ca65e747368c6dbb47d32720c2672a  ChintamaniGemsSetup-0.7.2.exe

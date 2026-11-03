@@ -137,7 +137,7 @@ def build_ui(w):
         frame,inner=card();title=label(kind+' Diamonds');title.setStyleSheet('font-size:16px;font-weight:600;');inner.addWidget(title)
         info=label('','fileInfo');info.setMinimumHeight(130);info.setTextInteractionFlags(Qt.TextSelectableByMouse);inner.addWidget(info);w.connection_labels[kind]=info
         button=QPushButton('Choose Excel file');button.clicked.connect(lambda checked=False,k=kind:w.add_file(k,persist=True));inner.addWidget(button)
-        button=QPushButton('Edit mapping');button.setObjectName('quiet');button.clicked.connect(lambda checked=False,k=kind:w.add_file(k,persist=True,edit=True));inner.addWidget(button);connections.addWidget(frame)
+        button=QPushButton('Edit mapping');button.setObjectName('quiet');button.clicked.connect(lambda checked=False,k=kind:w.add_file(k,persist=True,edit=True));inner.addWidget(button);disconnect_btn=QPushButton('Disconnect');disconnect_btn.setObjectName('quiet');disconnect_btn.setStyleSheet('color:#a33b35;border-color:#f5c6c3;');disconnect_btn.clicked.connect(lambda checked=False,k=kind:w.remove_profile(k));inner.addWidget(disconnect_btn);connections.addWidget(frame)
     layout.addLayout(connections);preview=QHBoxLayout();preview.addStretch();button=QPushButton('Preview inventory');button.setObjectName('quiet');button.clicked.connect(w.preview_payload);preview.addWidget(button);layout.addLayout(preview);layout.addStretch();w.pages.addWidget(config)
     from .portal_ui import api_page
     w.pages.addWidget(api_page(w))

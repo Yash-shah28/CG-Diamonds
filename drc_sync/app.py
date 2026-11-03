@@ -252,7 +252,7 @@ class Window(QMainWindow):
             for p in profiles:
                 if not p['id'] or p['id'] in ids or p['kind'] not in ('Natural','Lab Grown'): raise ValueError()
                 ids.add(p['id'])
-                if not isinstance(p['mapping'], dict) or not Path(p['path']).is_file(): raise ValueError()
+                if not isinstance(p['mapping'], dict) or not p['path']: raise ValueError()
                 if not p['sheet']: raise ValueError()
                 if any('key' in k.lower() for k in p): raise ValueError('Credentials belong in API credentials tab')
                 if not isinstance(p.get('required', []), list) or not isinstance(p.get('numeric', []), list): raise ValueError()
@@ -262,8 +262,23 @@ class Window(QMainWindow):
             self.update_status('Profiles saved')
             return True
         except Exception:
-            QMessageBox.warning(self, 'Invalid configuration', 'Check JSON, unique profile IDs, kind, existing file, sheet and mappings. Check workbook and column mappings.')
+            QMessageBox.warning(self, 'Invalid configuration', 'Check JSON, unique profile IDs, kind, sheet and mappings. Check workbook and column mappings.')
             return False
+    def remove_profile(self, kind):
+        profiles = self.store.get('profiles', [])
+        existing = next((p for p in profiles if p.get('kind') == kind), None)
+        if not existing:
+            return
+        if QMessageBox.question(self, f'Disconnect {kind}', f'Disconnect {kind} Diamonds Excel workbook?\nYou can reconnect it anytime.') != QMessageBox.Yes:
+            return
+        profiles = [p for p in profiles if p.get('kind') != kind]
+        self.store.set('profiles', profiles)
+        self.store.db.execute('DELETE FROM portal_cache WHERE kind=?', (kind,))
+        self.store.db.execute("DELETE FROM errors WHERE profile=?", (existing.get('id', ''),))
+        self.store.db.commit()
+        self.editor.setPlainText(json.dumps(profiles, indent=2))
+        self.update_status(f'{kind} workbook disconnected')
+        self.refresh()
     def add_file(self, inventory_kind=None, persist=False, edit=False):
         try:
             profiles = self.read_profiles()
@@ -310,7 +325,10 @@ class Window(QMainWindow):
             if inventory_kind: profiles = [old for old in profiles if old['kind'] != inventory_kind]
             profiles.append(p); self.editor.setPlainText(json.dumps(profiles,indent=2))
             if persist:
-                if not self.save(): self.reload_profiles()
+                if self.save():
+                    self.sync()
+                else:
+                    self.reload_profiles()
                 self.refresh()
         except Exception as exc:
             QMessageBox.warning(self, 'Could not add workbook', workbook_error({'path':path,'kind':inventory_kind or 'Inventory'},exc)+'\nYour saved profiles are unchanged.')

@@ -1,64 +1,211 @@
 """Company and Feed management widgets; all network work stays on the serialized worker."""
 import json
 import re
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QPushButton,QTableWidget,
- QTableWidgetItem,QDialog,QFormLayout,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QDialogButtonBox,QHeaderView,QTabWidget)
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QTableWidget,
+ QTableWidgetItem,QDialog,QFormLayout,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QDialogButtonBox,QHeaderView,QTabWidget,QFrame,QAbstractItemView)
 from .dialogs import dialog_layout,dialog_buttons
 from .portal_client import DEFAULT_BASE,clean_base
 from . import portal_secrets
 
+
+# ── column indices ──────────────────────────────────────────────
+_COL_NAME    = 0
+_COL_SCOPE   = 1
+_COL_EMAIL   = 2
+_COL_STATUS  = 3
+_COL_ACTIONS = 4
+_NUM_COLS    = 5
+
+
+def _feed_status_style(status):
+    """Return (bg, fg) for a status pill."""
+    s = (status or '').lower()
+    if 'active' in s or 'published' in s:
+        return '#e6f4ea', '#1a6b3a'
+    if 'draft' in s:
+        return '#fff8e6', '#7a5500'
+    if 'revoked' in s or 'suspended' in s:
+        return '#fdecea', '#a33b35'
+    return '#f1f4f7', '#526172'
+
+
+def _make_pill(text):
+    """Return a centred pill QLabel."""
+    bg, fg = _feed_status_style(text)
+    lbl = QLabel(text)
+    lbl.setAlignment(Qt.AlignCenter)
+    lbl.setFixedHeight(26)
+    lbl.setStyleSheet(
+        f'background:{bg};color:{fg};border-radius:12px;'
+        f'padding:2px 10px;font-size:12px;font-weight:600;'
+    )
+    return lbl
+
+
+def _row_actions(w, company_id):
+    """Return a compact widget with Publish · Edit · Delete buttons for one row."""
+    holder = QWidget()
+    row = QHBoxLayout(holder)
+    row.setContentsMargins(6, 4, 6, 4)
+    row.setSpacing(4)
+
+    pub = QPushButton('Publish')
+    pub.setFixedHeight(30)
+    pub.setStyleSheet(
+        'font-size:12px;font-weight:600;padding:0 10px;'
+        'background:#2f6ae6;color:white;border:none;border-radius:4px;'
+    )
+
+    edit = QPushButton('✎ Edit')
+    edit.setObjectName('quiet')
+    edit.setFixedHeight(30)
+    edit.setStyleSheet(
+        'font-size:12px;padding:0 10px;border-radius:4px;'
+        'background:white;color:#475569;border:1px solid #d8e0e9;'
+    )
+
+    delete = QPushButton('✕')
+    delete.setObjectName('quiet')
+    delete.setFixedHeight(30)
+    delete.setFixedWidth(30)
+    delete.setToolTip('Revoke & delete feed')
+    delete.setStyleSheet(
+        'font-size:13px;padding:0;border-radius:4px;'
+        'background:white;color:#a33b35;border:1px solid #f5c6c3;'
+    )
+
+    def do_publish():
+        c = w.store.company(company_id)
+        if not c:
+            return
+        text = ('Publish this feed inventory and email its API access?\n\n'
+                'Feed Name: ' + c['name'] + '\nRecipient: ' + c['email'] +
+                '\nInventory: ' + ', '.join(json.loads(c['kinds'])))
+        if QMessageBox.question(w, 'Confirm invitation', text) != QMessageBox.Yes:
+            return
+        w.worker.request('email', c['id'])
+        w.update_status('Preparing feed access for ' + c['name'])
+
+    def do_edit():
+        c = w.store.company(company_id)
+        if c:
+            create_feed_dialog(w, c)
+
+    def do_delete():
+        c = w.store.company(company_id)
+        if not c:
+            return
+        if QMessageBox.question(
+            w, 'Revoke feed access',
+            f"Revoke API access for {c['name']}?\nThis does not delete its history."
+        ) == QMessageBox.Yes:
+            w.worker.request('revoke', c['id'])
+
+    pub.clicked.connect(do_publish)
+    edit.clicked.connect(do_edit)
+    delete.clicked.connect(do_delete)
+
+    row.addWidget(pub)
+    row.addWidget(edit)
+    row.addWidget(delete)
+    row.addStretch()
+    return holder
+
+
 def api_page(w):
-    from .ui import label,configure_table
-    page=QWidget();layout=QVBoxLayout(page);layout.setContentsMargins(0,0,0,0);layout.setSpacing(14)
-    
-    # Top header bar matching DRC Feeds toolbar
-    top_bar=QHBoxLayout();top_bar.setSpacing(10)
-    top_bar.addWidget(label('Configure client feeds and read-only API access.','muted'),1)
-    
-    create_btn=QPushButton('+ Create Feed')
-    create_btn.setStyleSheet('font-weight:600;padding:8px 16px;')
-    create_btn.clicked.connect(lambda:create_feed_dialog(w))
-    top_bar.addWidget(create_btn)
-    
-    settings_btn=QPushButton('Email && Hosting Settings')
+    from .ui import label
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(12)
+
+    # ── toolbar ────────────────────────────────────────────────
+    toolbar = QHBoxLayout()
+    toolbar.setSpacing(8)
+
+    title_lbl = label('Client Feeds', 'pageSection')
+    title_lbl.setStyleSheet('font-size:17px;font-weight:600;color:#202b3a;')
+    toolbar.addWidget(title_lbl)
+    toolbar.addStretch()
+
+    settings_btn = QPushButton('⚙  Settings')
     settings_btn.setObjectName('quiet')
-    settings_btn.clicked.connect(lambda:hosting_settings(w))
-    top_bar.addWidget(settings_btn)
-    
-    layout.addLayout(top_bar)
-    
-    w.api_setup_status=label('Email sender and private hosting status shown here.','muted')
+    settings_btn.setFixedHeight(36)
+    settings_btn.setStyleSheet('font-size:13px;padding:0 14px;border-radius:5px;')
+    settings_btn.clicked.connect(lambda: hosting_settings(w))
+    toolbar.addWidget(settings_btn)
+
+    create_btn = QPushButton('+ New Feed')
+    create_btn.setFixedHeight(36)
+    create_btn.setStyleSheet(
+        'font-size:13px;font-weight:700;padding:0 16px;border-radius:5px;'
+        'background:#2f6ae6;color:white;border:none;'
+    )
+    create_btn.clicked.connect(lambda: create_feed_dialog(w))
+    toolbar.addWidget(create_btn)
+
+    layout.addLayout(toolbar)
+
+    # ── status bar ─────────────────────────────────────────────
+    w.api_setup_status = label('Email sender and private hosting status shown here.', 'muted')
     layout.addWidget(w.api_setup_status)
-    
-    w.clients_table=QTableWidget(0,5)
-    w.clients_table.setHorizontalHeaderLabels(['Feed Name','Inventory Scope','Recipient Email','Feed Status','Email Delivery'])
-    configure_table(w.clients_table)
-    for i,width in enumerate([170,150,210,180,210]):w.clients_table.setColumnWidth(i,width)
-    w.clients_table.horizontalHeader().setStretchLastSection(True)
-    layout.addWidget(w.clients_table,1)
-    
-    actions=QHBoxLayout();actions.setSpacing(10)
-    specs=[('Publish & email',lambda:request_email(w)),
-           ('Rotate key & email',lambda:request_email(w,True)),
-           ('Edit feed',lambda:edit_access(w)),
-           ('Revoke access',lambda:revoke(w))]
-    for i,(title,fn) in enumerate(specs):
-        b=QPushButton(title.replace('&','&&'));b.clicked.connect(fn)
-        if i!=0:b.setObjectName('quiet')
-        actions.addWidget(b)
-    actions.addStretch()
-    layout.addLayout(actions)
-    
-    bottom=QHBoxLayout()
-    w.api_url_label=label(w.store.get('portal_hosting',{}).get('base_url',DEFAULT_BASE)+'/api/v1/inventory','muted')
+
+    # ── table ──────────────────────────────────────────────────
+    w.clients_table = QTableWidget(0, _NUM_COLS)
+    w.clients_table.setHorizontalHeaderLabels(
+        ['Feed Name', 'Scope', 'Recipient Email', 'Status', 'Actions']
+    )
+    w.clients_table.setShowGrid(False)
+    w.clients_table.setAlternatingRowColors(True)
+    w.clients_table.setStyleSheet(
+        'QTableWidget{alternate-background-color:#f8fafc;background:white;'
+        'border:1px solid #e1e6ed;border-radius:6px;}'
+        'QHeaderView::section{background:#f4f6f9;color:#253244;border:none;'
+        'border-bottom:1px solid #e1e6ed;padding:10px 12px;font-weight:600;font-size:13px;}'
+        'QTableWidget::item{padding:6px 10px;border:none;}'
+        'QTableWidget::item:selected{background:#e9f0ff;color:#202b3a;}'
+    )
+    w.clients_table.verticalHeader().hide()
+    w.clients_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    w.clients_table.setSelectionMode(QAbstractItemView.SingleSelection)
+    w.clients_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    w.clients_table.setFocusPolicy(Qt.StrongFocus)
+
+    hdr = w.clients_table.horizontalHeader()
+    hdr.setSectionResizeMode(QHeaderView.Interactive)
+    hdr.setMinimumHeight(40)
+    w.clients_table.setColumnWidth(_COL_NAME,   180)
+    w.clients_table.setColumnWidth(_COL_SCOPE,  120)
+    w.clients_table.setColumnWidth(_COL_EMAIL,  210)
+    w.clients_table.setColumnWidth(_COL_STATUS, 110)
+    hdr.setSectionResizeMode(_COL_ACTIONS, QHeaderView.Stretch)
+
+    layout.addWidget(w.clients_table, 1)
+
+    # ── API URL strip ──────────────────────────────────────────
+    url_bar = QHBoxLayout()
+    url_bar.setSpacing(8)
+    w.api_url_label = label(
+        w.store.get('portal_hosting', {}).get('base_url', DEFAULT_BASE) + '/api/v1/inventory',
+        'muted'
+    )
     w.api_url_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    bottom.addWidget(w.api_url_label,1)
-    copy=QPushButton('Copy API URL')
-    copy.setObjectName('quiet')
-    copy.clicked.connect(lambda:__import__('PySide6.QtWidgets',fromlist=['QApplication']).QApplication.clipboard().setText(w.api_url_label.text()))
-    bottom.addWidget(copy)
-    layout.addLayout(bottom)
+    url_bar.addWidget(QLabel('API URL:'))
+    url_bar.addWidget(w.api_url_label, 1)
+
+    copy_btn = QPushButton('Copy')
+    copy_btn.setObjectName('quiet')
+    copy_btn.setFixedHeight(30)
+    copy_btn.setFixedWidth(60)
+    copy_btn.setStyleSheet('font-size:12px;padding:0;border-radius:4px;')
+    copy_btn.clicked.connect(
+        lambda: __import__('PySide6.QtWidgets', fromlist=['QApplication'])
+                .QApplication.clipboard().setText(w.api_url_label.text())
+    )
+    url_bar.addWidget(copy_btn)
+    layout.addLayout(url_bar)
+
     return page
 
 def selected_company(w):
@@ -71,31 +218,30 @@ def create_feed_dialog(w,company=None):
     from .ui import AdjustmentButtons,PercentageInput
     d=QDialog(w)
     d.setWindowTitle('Edit Feed' if company else 'Create Feed')
-    d.resize(560,420)
+    d.resize(520,380)
     layout=dialog_layout(d)
-    
-    title_lbl=QLabel('Edit Feed Access' if company else 'Create New Client Feed')
-    title_lbl.setStyleSheet('font-size:16px;font-weight:700;')
+
+    title_lbl=QLabel('Edit Feed' if company else 'New Client Feed')
+    title_lbl.setStyleSheet('font-size:17px;font-weight:700;color:#202b3a;')
     layout.addWidget(title_lbl)
-    
-    form=QFormLayout();form.setSpacing(14)
+
+    form=QFormLayout();form.setSpacing(14);form.setLabelAlignment(Qt.AlignRight)
     name=QLineEdit(company['name'] if company else '')
     email=QLineEdit(company['email'] if company else '')
-    name.setPlaceholderText('e.g. Acme Gems / Client Website')
+    name.setPlaceholderText('e.g. Acme Gems')
     email.setPlaceholderText('recipient@company.com')
     name.setMaxLength(120);email.setMaxLength(254)
-    form.addRow('Feed / Company Name',name)
-    form.addRow('Recipient Email',email)
-    
-    checks=QHBoxLayout()
+    form.addRow('Feed name',name)
+    form.addRow('Recipient email',email)
+
+    checks=QHBoxLayout();checks.setSpacing(16)
     natural=QCheckBox('Natural Diamonds')
     lab=QCheckBox('Lab Grown Diamonds')
     kinds=json.loads(company['kinds']) if company else ['Natural','Lab Grown']
-    natural.setChecked('Natural' in kinds)
-    lab.setChecked('Lab Grown' in kinds)
-    checks.addWidget(natural);checks.addWidget(lab)
-    form.addRow('Inventory Scope',checks)
-    
+    natural.setChecked('Natural' in kinds);lab.setChecked('Lab Grown' in kinds)
+    checks.addWidget(natural);checks.addWidget(lab);checks.addStretch()
+    form.addRow('Inventory scope',checks)
+
     mode=AdjustmentButtons()
     percent=PercentageInput()
     percent.setMinimumWidth(140);percent.setFixedHeight(44)
@@ -104,24 +250,24 @@ def create_feed_dialog(w,company=None):
     percent.setValue(float(company['percent']) if company else 0)
     mode.currentIndexChanged.connect(lambda:percent.setMaximum(100 if mode.currentIndex() else 99.99))
     if not company:
-        form.addRow('Price Adjustment',mode)
+        form.addRow('Price adjustment',mode)
         form.addRow('Percentage (%)',percent)
-    
+
     layout.addLayout(form)
-    help_lbl=QLabel('Read-only API access keys are generated and held safely in Windows Credential Manager. An invitation email with integration instructions is sent only when you choose Publish & email.')
-    help_lbl.setWordWrap(True);help_lbl.setStyleSheet('color:rgba(255,255,255,0.6);font-size:12px;')
-    layout.addWidget(help_lbl)
-    
+
+    hint=QLabel('API keys are stored in Windows Credential Manager. An invitation email is only sent when you click Publish.')
+    hint.setWordWrap(True);hint.setObjectName('muted');layout.addWidget(hint)
+
     error=QLabel();error.setObjectName('error');error.setWordWrap(True);layout.addWidget(error)
     buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
     buttons.button(QDialogButtonBox.Save).setText('Save Feed' if company else 'Create Feed')
     buttons.rejected.connect(d.reject)
-    
+
     def save():
         try:
             chosen=[k for k,c in [('Natural',natural),('Lab Grown',lab)] if c.isChecked()]
             if not name.text().strip() or not chosen:
-                raise ValueError('Enter a feed/company name and select at least one inventory scope.')
+                raise ValueError('Enter a feed name and select at least one inventory scope.')
             if not re.fullmatch(r'[^\s@<>\r\n]+@[^\s@<>\r\n]+\.[^\s@<>\r\n]+',email.text().strip()):
                 raise ValueError('Enter a valid recipient email address.')
             percent.interpretText()
@@ -135,8 +281,8 @@ def create_feed_dialog(w,company=None):
             d.accept()
         except Exception as exc:
             from .responses import redact_text
-            error.setText(redact_text(str(exc)) if isinstance(exc,ValueError) else 'Could not save feed access. Check Windows Credential Manager and local storage.')
-            
+            error.setText(redact_text(str(exc)) if isinstance(exc,ValueError) else 'Could not save feed. Check Windows Credential Manager and local storage.')
+
     buttons.accepted.connect(save)
     layout.addWidget(buttons)
     if d.exec()==QDialog.Accepted:
@@ -272,10 +418,28 @@ def hosting_settings(w):
     d.exec()
 
 def refresh_companies(w):
-    old_ids=getattr(w,'client_ids',[]);row=w.clients_table.currentRow();selected=old_ids[row] if 0<=row<len(old_ids) else None
-    companies=w.store.companies();w.client_ids=[c['id'] for c in companies];w.clients_table.setRowCount(len(companies))
+    old_ids=getattr(w,'client_ids',[]);row=w.clients_table.currentRow()
+    selected=old_ids[row] if 0<=row<len(old_ids) else None
+    companies=w.store.companies();w.client_ids=[c['id'] for c in companies]
+    w.clients_table.setRowCount(len(companies))
+    ROW_H = 46
     for i,c in enumerate(companies):
-        for j,value in enumerate([c['name'],', '.join(json.loads(c['kinds'])),c['email'],c['status'],c['last_email']]):
-            item=QTableWidgetItem(value);item.setToolTip(value);w.clients_table.setItem(i,j,item)
+        w.clients_table.setRowHeight(i, ROW_H)
+        # Feed Name
+        item=QTableWidgetItem(c['name']);item.setToolTip(c['name'])
+        item.setData(Qt.UserRole,c['id']);w.clients_table.setItem(i,_COL_NAME,item)
+        # Scope
+        scope=', '.join(json.loads(c['kinds']))
+        item2=QTableWidgetItem(scope);item2.setToolTip(scope)
+        w.clients_table.setItem(i,_COL_SCOPE,item2)
+        # Email
+        item3=QTableWidgetItem(c['email']);item3.setToolTip(c['email'])
+        w.clients_table.setItem(i,_COL_EMAIL,item3)
+        # Status pill (widget)
+        pill_holder=QWidget();ph=QHBoxLayout(pill_holder);ph.setContentsMargins(6,6,6,6)
+        ph.addWidget(_make_pill(c['status'] or 'Draft'));ph.addStretch()
+        w.clients_table.setCellWidget(i,_COL_STATUS,pill_holder)
+        # Inline actions
+        w.clients_table.setCellWidget(i,_COL_ACTIONS,_row_actions(w,c['id']))
     if selected in w.client_ids:w.clients_table.selectRow(w.client_ids.index(selected))
     elif companies:w.clients_table.selectRow(0)
