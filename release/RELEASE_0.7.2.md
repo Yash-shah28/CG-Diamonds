@@ -22,3 +22,4 @@ Version 0.7.2 was built and published to the stable update channel.
 Any installed copy of Chintamani Gems (0.7.1 or earlier) will discover this
 release automatically — 15 seconds after launch and every 6 hours, or when clicking
 **"Check for updates"** in the sidebar.
+

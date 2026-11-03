@@ -55,7 +55,8 @@ class PortalClient:
         intent=self.admin({'action':'authorize',**metadata})
         if not intent.get('already_published'):
             url=intent.get('upload_url','');u=urlsplit(url)
-            if u.scheme!='https' or u.hostname!='blob.vercel-storage.com' or u.username or u.password:
+            trusted = u.hostname in ('blob.vercel-storage.com', 'vercel.com') or (u.hostname and u.hostname.endswith('.vercel-storage.com'))
+            if u.scheme!='https' or not trusted or u.username or u.password:
                 raise HostingError('Hosting returned an untrusted upload address.',False)
             try:
                 r=self.http.put(url,content=raw,headers={'Content-Type':'application/json'},timeout=120)
