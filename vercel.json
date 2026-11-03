@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/v1/admin.js":     { "maxDuration": 60 },
+    "api/v1/inventory.js": { "maxDuration": 60 }
+  }
+}
