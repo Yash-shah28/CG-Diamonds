@@ -14,8 +14,9 @@ def failure_detail(stage, exc, dispatched=False):
 
 def run_preflight(kind, key_reader=None, client_factory=None):
     if key_reader is None:
-        from .credentials import read_key
-        key_reader = read_key
+        from .portal_secrets import get_secret,hosting_slot
+        from .portal_client import DEFAULT_BASE
+        key_reader = lambda kind: get_secret(hosting_slot(DEFAULT_BASE))
     checks = []
     for stage, check in (
         ('credential lookup', lambda: bool(key_reader(kind))),

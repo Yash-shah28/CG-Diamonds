@@ -7,7 +7,7 @@ CreateUninstallRegKey=no
 AppId=Chintamani Gems
 #endif
 AppName=Chintamani Gems
-AppVersion=0.6.3
+AppVersion=0.7.1
 AppPublisher=Chintamani Gems
 AppPublisherURL=https://chintamani-updates.vercel.app/
 AppUpdatesURL=https://chintamani-updates.vercel.app/
@@ -17,7 +17,7 @@ OutputDir=..\release
 #ifdef SmokeTest
 OutputBaseFilename=ChintamaniGemsSetup-Smoke
 #else
-OutputBaseFilename=ChintamaniGemsSetup-0.6.3
+OutputBaseFilename=ChintamaniGemsSetup-0.7.1
 #endif
 SetupIconFile=..\drc_sync\assets\chintamani-gems.ico
 UninstallDisplayIcon={app}\ChintamaniGems.ico
@@ -84,14 +84,3 @@ begin
   if CompareText(ExtractFileName(PreviousDir), 'DRCInventorySync') = 0 then
     WizardForm.DirEdit.Text := AddBackslash(ExtractFileDir(PreviousDir)) + 'ChintamaniGems';
 end;
-
-#ifndef SmokeTest
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-begin
-  if CurStep = ssPostInstall then
-    if not Exec(ExpandConstant('{app}\ChintamaniGems.exe'), '--provision-credentials', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-      MsgBox('API credential setup could not finish. Reopen Chintamani Gems to retry setup. No inventory has been sent.', mbError, MB_OK);
-end;
-#endif

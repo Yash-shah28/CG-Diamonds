@@ -110,3 +110,38 @@ credential self-test with both inventory types, idempotent provisioning, zero
 requests, no plaintext credential file and no real test credential-store writes.
 Smoke installer mutex was isolated from the running production app; the production
 installer retains its normal application mutex and offline setup callback.
+
+## Version 0.7.0 pull inventory feature (2026-10-27)
+
+- Full Python regression suite: 185 passed, isolated SQLite and mocked network.
+- Inventory backend: 13 tests passed. Updates repository: 23 tests passed,
+  including the existing signed updater contract.
+- Checked company scope isolation, original-price adjustments, rate boundaries,
+  immutable snapshot integrity, stale revisions, rotation, revocation, interrupted
+  publication, legacy queued-job preservation and zero DRC dispatch.
+- Checked Google loopback/PKCE authorization, send acceptance, redaction, ambiguous
+  email outcomes without automatic retries, and local history-storage failures.
+- Checked all five pages at 1240x890 and 980x680, expanded/collapsed sidebar,
+  detailed workbook error notifications and History access. Rendered and visually
+  checked all five integration-guide PDF pages; no real credentials are included.
+- Backend scaffold pushed as updates repository commit 81e5b55. Anonymous inventory
+  endpoint returns 503 until private hosting is configured. Public updater remains
+  HTTP 200 and its signed payload remains version 0.6.3.
+- No production inventory or invitation email was sent. Existing installed app,
+  production database, Windows credentials, shortcuts and startup were untouched.
+- Private Blob store, owner management hash and Google Desktop OAuth application
+  are still required before live activation/customer delivery. Version 0.7.0 is
+  not published to the automatic update channel.
+- Final frozen modules matched current source; the bundled DRC credential module
+  was excluded. Frozen offline diagnostic and smoke-installer-installed diagnostic
+  both passed: pull-only, no legacy dispatch, send-only Google scope, PDF ready,
+  zero network requests. Normal frozen startup passed with isolated empty data and
+  updates disabled. The test process was closed without replacing the installed app.
+Local production installer compiled successfully (52,792,758 bytes); not published.
+
+## 0.7.0 stable publication — 2026-10-27
+
+Published at the owner's explicit request despite incomplete hosting/Google setup.
+Verified the live stable manifest's Ed25519 signature and version 0.7.0, then
+retrieved the public download and verified its exact 52,792,758-byte length and
+SHA-256 against the signed manifest. No production inventory/email was sent.

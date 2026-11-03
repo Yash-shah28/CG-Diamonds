@@ -14,6 +14,7 @@ def redact_text(text, secrets=()):
         if secret:
             for value in {secret, quote(secret, safe=''), json.dumps(secret)[1:-1]}:
                 text = text.replace(value, REDACTED)
+    text = re.sub(r'(?i)\b(?:dsk_|cg_read_|cg_admin_)[A-Za-z0-9_-]+', REDACTED, text)
     text = re.sub(r'(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+', lambda m: m[1]+' '+REDACTED, text)
     pattern = r'''(?im)(["']?(?:x[-_ ]?api[-_ ]?key|api[-_ ]?key|authorization|proxy-authorization|access_token|refresh_token|password|client_secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;]+)'''
     return re.sub(pattern, lambda m: m[1]+REDACTED, text)

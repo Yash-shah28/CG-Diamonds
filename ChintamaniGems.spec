@@ -17,7 +17,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['drc_sync._bundled_credentials'],
     noarchive=False,
     optimize=0,
 )

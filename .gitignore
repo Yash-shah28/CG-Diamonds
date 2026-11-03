@@ -12,3 +12,6 @@ dist/
 dist-next/
 
 drc_sync/_bundled_credentials.py
+
+inventory-service/node_modules/
+output/

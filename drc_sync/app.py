@@ -19,11 +19,11 @@ from .rates import apply_website_rate, rate_config, RateConfigError
 from .ui import build_ui, nav_icon, configure_table, status_badge
 from .dialogs import dialog_layout, dialog_buttons, choose_item, MappingField, ColumnLabelDelegate
 from .monitor import Stability
-from .credentials import read_key, save_key
 from .instance import Instance
 from .contract import FIELDS, new_profile, suggested_field
 from .responses import response_description, redact_text
 from .diagnostics import failure_detail, run_preflight
+from .workbook_errors import workbook_error
 
 class Events(FileSystemEventHandler):
     def __init__(self, wake):
@@ -34,152 +34,8 @@ class Events(FileSystemEventHandler):
                 if path and not Path(path).name.startswith('~$'):
                     self.wake(str(Path(path).resolve()))
 
-class Worker(QThread):
-    changed = Signal(str)
-    sent_to_drc = Signal(str)
-    prepared = Signal(object, object)
-    inspect_failed = Signal(str)
-    response_ready = Signal(int)
-    inspection_problem = Signal(object)
-    diagnostics_ready = Signal(object)
-    def __init__(self, dbpath):
-        super().__init__()
-        self.dbpath = dbpath
-        self.paused = False
-        self.manual = False
-        self.requests = SimpleQueue()
-    def prepare_inspection(self, profile):
-        self.requests.put(('prepare', json.loads(json.dumps(profile)), None))
-    def send_inspection(self, profile, payload):
-        self.requests.put(('send', json.loads(json.dumps(profile)), payload))
-    def process_inspection(self, store, request):
-        action, profile, payload = request
-        if action == 'diagnose':
-            self.diagnostics_ready.emit(run_preflight(profile['kind'], key_reader=read_key))
-        elif action == 'prepare':
-            try:
-                self.prepared.emit(profile, apply_website_rate(parse_excel(profile), store.get('website_rates', {}), profile.get('website', 'drc')))
-            except ValueError as exc:
-                self.inspect_failed.emit(str(exc))
-            except Exception:
-                self.inspect_failed.emit('The workbook could not be prepared. Check the file, worksheet and mappings.')
-        elif action == 'send':
-            try:
-                job_id = store.enqueue_manual(profile['id'], payload, profile)
-                job = store.db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
-            except Exception as exc:
-                detail = failure_detail('history saving (request creation)',exc)
-                result = attempt_snapshot({'id':0,'attempts':0,'manual':1},profile,'','blocked',detail,error=detail)
-                try: store.db.rollback()
-                except Exception: pass
-                self.inspection_problem.emit(result)
-                return
-            try:
-                key = read_key(profile['kind'])
-            except Exception as exc:
-                detail = failure_detail('credential lookup',exc)
-                result = save_attempt(store,job,profile,'','blocked',detail,error=detail)
-            else:
-                try:
-                    result = deliver(store, job, profile, key, manual=True)
-                except Exception as exc:
-                    detail = failure_detail('request dispatch or history saving',exc,True)
-                    result = save_attempt(store,job,profile,key,'review',detail,error=detail,dispatched=True)
-            if result and not result['saved']:
-                self.inspection_problem.emit(result)
-                return
-            self.response_ready.emit(job_id)
-    def run(self):
-        store = Store(self.dbpath)
-        signatures = {}
-        stable = Stability()
-        observer = Observer()
-        watched = set()
-        manual_profiles = set()
-        # Periodic checks are authoritative; events reduce recovery latency.
-        events = SimpleQueue()
-        handler = Events(events.put)
-        observer.start()
-        try:
-            while not self.isInterruptionRequested():
-                try:
-                    request = self.requests.get_nowait()
-                except Empty:
-                    request = None
-                if request is not None:
-                    self.process_inspection(store, request)
-                profiles = store.get('profiles', [])
-                dirty = set()
-                while True:
-                    try: dirty.add(events.get_nowait())
-                    except Empty: break
-                force = self.manual
-                self.manual = False
-                if force:
-                    manual_profiles.update(p['id'] for p in profiles)
-                for p in profiles:
-                    if self.isInterruptionRequested(): break
-                    force_profile = p['id'] in manual_profiles
-                    if self.paused or (not p.get('enabled', True) and not force_profile):
-                        continue
-                    try:
-                        path = Path(p['path']).resolve()
-                        if str(path.parent) not in watched and path.parent.is_dir():
-                            observer.schedule(handler, str(path.parent), recursive=False)
-                            watched.add(str(path.parent))
-                        sig = (path.stat().st_size, path.stat().st_mtime_ns, json.dumps(p, sort_keys=True))
-                        name = p['id']
-                        if p.get('upload_on_save') and name not in signatures and not force_profile:
-                            signatures[name] = sig
-                            stable.ready(name, sig, time.monotonic())
-                            continue
-                        if str(path) in dirty:
-                            if not p.get('upload_on_save'): signatures.pop(name, None)
-                            stable.states.pop(name, None)
-                        if force_profile:
-                            signatures.pop(name, None)
-                        if not stable.ready(name, sig, time.monotonic()):
-                            continue
-                        if force_profile or signatures.get(name) != sig:
-                            payload = apply_website_rate(parse_excel(p), store.get('website_rates', {}), p.get('website', 'drc'))
-                            new_job = store.enqueue(name, payload, p, force=p.get('upload_on_save') is True)
-                            if new_job is None:
-                                manual_profiles.discard(name)
-                            signatures[name] = sig
-                            self.changed.emit('Workbook validated: ' + path.name)
-                    except (FormulaResultError, RateConfigError) as exc:
-                        detail = redact_text(str(exc))
-                        store.error(p['id'], detail)
-                        self.changed.emit(detail)
-                    except Exception as exc:
-                        # Exception messages from external libraries may contain paths or data.
-                        detail = 'Workbook unavailable or invalid (' + type(exc).__name__ + '). Check sheet, mapping, cells and file access.'
-                        store.error(p['id'], detail)
-                        self.changed.emit(detail)
-                if not self.paused and not self.isInterruptionRequested():
-                    jobs = store.db.execute("SELECT * FROM jobs WHERE manual=0 AND state IN ('pending','retry') AND due<=? ORDER BY id", (time.time(),)).fetchall()
-                    for job in jobs:
-                        profile = next((p for p in profiles if p['id']==job['profile']), None)
-                        if self.paused or self.isInterruptionRequested(): break
-                        if profile and (profile.get('enabled', True) or profile['id'] in manual_profiles):
-                            try:
-                                try:
-                                    rate_config(store.get('website_rates', {}), profile.get('website', 'drc'))
-                                except RateConfigError:
-                                    store.finish(job, 'blocked', 'Invalid website rate. Correct Change Rates before uploading.'); self.changed.emit('Invalid website rate; correct Change Rates'); continue
-                                key = read_key(profile['kind'])
-                                deliver(store, job, profile, key)
-                                state = store.db.execute('SELECT state FROM jobs WHERE id=?', (job['id'],)).fetchone()[0]
-                                if state == 'sent': self.sent_to_drc.emit(profile['kind'])
-                                self.changed.emit('Sync ' + state + '; see history')
-                                manual_profiles.discard(profile['id'])
-                            except Exception:
-                                store.finish(job, 'blocked', 'Credential storage or local processing unavailable')
-                self.msleep(1000)
-        finally:
-            observer.stop()
-            observer.join()
-            store.db.close()
+from .pull_worker import PullWorker as Worker
+from .portal_store import PortalStore as Store
 
 EXAMPLE = new_profile()
 
@@ -193,10 +49,12 @@ class Window(QMainWindow):
         available = screen.availableGeometry() if screen else None
         self.resize(min(1240, max(980, available.width() - 48)) if available else 1240, min(890, max(680, available.height() - 64)) if available else 890)
         self.setStyleSheet(STYLE)
-        self.store = Store(dbpath)
+        self.store = Store(dbpath, recover=True)
         self.worker = Worker(dbpath)
         self.worker.changed.connect(self.update_status)
-        self.worker.sent_to_drc.connect(self.notify_sent)
+        self.worker.problem.connect(self.notify_problem)
+        self.worker.task_done.connect(self.task_finished)
+        self.worker.published.connect(self.notify_published)
         self.worker.prepared.connect(self.confirm_inspection)
         self.worker.inspect_failed.connect(self.inspection_failed)
         self.worker.response_ready.connect(self.inspection_finished)
@@ -210,12 +68,13 @@ class Window(QMainWindow):
             action = menu.addAction(name); action.triggered.connect(fn)
         self.tray.setContextMenu(menu); self.tray.activated.connect(lambda reason: self.open_window() if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None)
         self.tray.show()
+        self.tray.messageClicked.connect(lambda:self.show_latest_issue())
         self.timer = QTimer(self); self.timer.timeout.connect(self.refresh); self.timer.start(3000)
         self.worker.start(); self.refresh()
     def navigate(self, index):
         self.pages.setCurrentIndex(index); self.page_title.setText(self.page_names[index])
         for number, button in enumerate(self.nav_buttons):
-            button.setChecked(number == index); button.setIcon(nav_icon(number, '#1684e8' if number == index else '#334155'))
+            button.setChecked(number == index); button.setIcon(nav_icon([0,1,6,2,3][number], '#1684e8' if number == index else '#334155'))
 
     def set_sidebar_collapsed(self, collapsed, persist=True):
         self.update_button.setToolButtonStyle(Qt.ToolButtonIconOnly if collapsed else Qt.ToolButtonTextBesideIcon)
@@ -233,18 +92,43 @@ class Window(QMainWindow):
         if not initial:
             row['dirty'] = True; row['save'].setEnabled(True); row['status'].setText('Not saved'); row['status'].setObjectName('muted')
 
-    def save_rate(self, website='drc'):
-        row = self.rate_rows[website]
+    def rebuild_rates(self):
+        from .ui import rebuild_rate_rows
+        rebuild_rate_rows(self)
+    def save_rate(self, website):
+        row=self.rate_rows[website]
         try:
             row['percent'].interpretText()
-            settings = self.store.get('website_rates', {})
-            settings[website] = {'mode':'increase' if row['mode'].currentIndex() else 'discount', 'percent':str(row['percent'].value())}
-            rate_config(settings, website); self.store.set('website_rates', settings)
-        except Exception:
-            QMessageBox.warning(self, 'Could not save rate', 'Check the percentage and local storage.'); return
-        row['invalid'] = False; row['dirty'] = False; row['status'].setObjectName('muted'); row['status'].setText('Saved: ' + format(row['percent'].value(), '.2f') + '% ' + row['mode'].currentText().lower())
-        self.update_status('Website rate saved; waiting for the next Excel save'); self.refresh()
-
+            self.store.set_rate(website,'increase' if row['mode'].currentIndex() else 'discount',str(row['percent'].value()))
+            row['status'].setText('Saved - publication queued');row['save'].setEnabled(False)
+            self.update_status('Company rate saved; publishing its prepared feed')
+        except ValueError as exc:QMessageBox.warning(self,'Rate needs attention',redact_text(str(exc)))
+        except Exception:QMessageBox.warning(self,'Rate could not be saved','Check local storage and enter a valid percentage.')
+        self.refresh()
+    def notify_problem(self, identity, detail):
+        detail=redact_text(detail);self.latest_issue=detail
+        self.update_status(detail)
+        notices=getattr(self,'_issue_notices',{});fingerprint=(identity,detail);now=time.monotonic()
+        if now-notices.get(fingerprint,-1000)>=60:
+            self.tray.showMessage('Chintamani Gems - issue',detail,QSystemTrayIcon.Warning,10000)
+            notices[fingerprint]=now
+        self._issue_notices=notices
+    def show_latest_issue(self):
+        self.open_window();self.navigate(4)
+        if getattr(self,'latest_issue',None):self.show_detail('Issue details',self.latest_issue)
+    def show_detail(self,title,detail):
+        dialog=QDialog(self);dialog.setWindowTitle(title);dialog.resize(760,460);layout=dialog_layout(dialog)
+        editor=QPlainTextEdit(redact_text(detail));editor.setReadOnly(True);layout.addWidget(editor)
+        buttons=QDialogButtonBox(QDialogButtonBox.Close);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons);dialog.exec()
+    def task_finished(self, action, message):
+        if action=='error':self.notify_problem('operation',message)
+        else:
+            self.api_setup_status.setText(message);self.update_status(message)
+        self.refresh()
+    def notify_published(self, company):
+        self.update_status(company+' inventory published to API. Website import is not confirmed.')
+        self.tray.showMessage('Inventory published',company+' can fetch its latest inventory.',QSystemTrayIcon.Information)
+        self.refresh()
     def open_window(self):
         self.showNormal()
         self.raise_()
@@ -258,41 +142,13 @@ class Window(QMainWindow):
         self.monitor_badge.setText('Paused' if self.worker.paused else 'Monitoring')
         self.pause_button.setText('Resume monitoring' if self.worker.paused else 'Pause monitoring')
         self.status.setText(('Paused • ' if self.worker.paused else 'Active • ') + message)
-        if any(word in message for word in ('failed', 'review', 'blocked', 'invalid')):
-            now = time.monotonic()
-            if now - getattr(self, '_last_notice', 0) > 60:
-                self.tray.showMessage('Chintamani Gems needs attention', message, QSystemTrayIcon.Warning)
-                self._last_notice = now
     def sync(self):
         self.worker.manual = True
-        self.update_status('Manual scan requested')
+        self.update_status('Validating and publishing connected inventory; no direct DRC request will be made')
     def begin_inspection(self):
-        try:
-            profiles = self.read_profiles()
-            if not profiles:
-                QMessageBox.information(self, 'No inventory profile', 'Add an Excel file and configure its mappings first.'); return
-            labels = [f"{p['id']} ({p['kind']}) — {Path(p['path']).name}" for p in profiles]
-            chosen, ok = choose_item(self, 'Send once & view response', 'Choose inventory profile', labels, 0, False)
-            if not ok: return
-            self.inspect_button.setEnabled(False)
-            self.update_status('Preparing inventory snapshot; nothing has been sent')
-            self.worker.prepare_inspection(profiles[labels.index(chosen)])
-        except ValueError as exc:
-            QMessageBox.warning(self, 'Profile settings', str(exc))
-    def confirm_inspection(self, profile, payload):
-        dialog = QDialog(self); dialog.setWindowTitle('Review before sending real inventory'); dialog.resize(760, 580)
-        layout = dialog_layout(dialog)
-        summary = QPlainTextEdit(f"Endpoint: {profile.get('endpoint', ENDPOINT)}\nFile: {profile['path']}\nWorksheet: {profile['sheet']}\nInventory: {profile['kind']}\nRecords: {len(payload['diamonds'])}\n\nThis sends real inventory to DRC. It may update or replace remote inventory.\nOnly the prepared snapshot below will be sent; later workbook changes are not included.\nAn unverified result stays Needs review. This request will not retry automatically.\n\nFirst 10 records:\n" + json.dumps({'diamonds':payload['diamonds'][:10]}, indent=2, ensure_ascii=False))
-        summary.setReadOnly(True); layout.addWidget(summary)
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
-        send = buttons.addButton('Send inventory', QDialogButtonBox.AcceptRole)
-        send.clicked.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
-        if dialog.exec() == QDialog.Accepted:
-            self.update_status('Sending one inventory request; waiting for DRC response')
-            self.worker.send_inspection(profile, payload)
-        else:
-            self.inspect_button.setEnabled(True)
-            self.update_status('Manual send cancelled; nothing was sent')
+        self.sync()
+    def confirm_inspection(self,profile,payload):
+        self.show_detail('Validated inventory preview',json.dumps({'diamonds':payload['diamonds'][:10]},indent=2,ensure_ascii=False)+'\n\nRead-only preview. Direct DRC sending is disabled.')
     def inspection_failed(self, message):
         self.inspect_button.setEnabled(True)
         QMessageBox.warning(self, 'Could not prepare inventory', message)
@@ -331,74 +187,47 @@ class Window(QMainWindow):
     def pause(self):
         self.worker.paused = not self.worker.paused
         self.update_status('Monitoring paused' if self.worker.paused else 'Monitoring resumed')
-    def open_history_response(self, row):
-        if 0 <= row < len(self.history_ids) and self.history_ids[row] is not None:
-            self.show_response(self.history_ids[row])
-
-    def connection_settings(self, inventory_kind):
-        profiles = self.read_profiles()
-        profile = next((p for p in profiles if p['kind'] == inventory_kind), None)
-        if not profile:
-            QMessageBox.information(self, 'Connect Excel first', 'Connect the ' + inventory_kind + ' workbook first.'); return
-        dialog = QDialog(self); dialog.setWindowTitle(inventory_kind + ' API connection')
-        form = QFormLayout(dialog)
-        form.addRow(QLabel('Endpoint: ' + profile.get('endpoint', ENDPOINT)))
-        key = QLineEdit(); key.setEchoMode(QLineEdit.Password); key.setPlaceholderText('Leave blank to keep the saved API key')
-        form.addRow('API key', key)
-        enabled = QComboBox(); enabled.addItems(['Monitoring enabled', 'Monitoring disabled']); enabled.setCurrentIndex(0 if profile.get('enabled', True) else 1)
-        form.addRow('Automatic monitoring', enabled)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); form.addRow(buttons)
-        if dialog.exec() == QDialog.Accepted:
-            try:
-                if key.text().strip(): save_key(inventory_kind, key.text().strip())
-                profile['enabled'] = enabled.currentIndex() == 0
-                self.editor.setPlainText(json.dumps(profiles, indent=2)); self.save(); self.refresh()
-            except Exception:
-                QMessageBox.warning(self, 'Credential error', 'Windows Credential Manager is unavailable.')
-
+    def open_history_response(self,row):
+        if not 0<=row<len(self.history_ids):return
+        job_id=self.history_ids[row]
+        if job_id and job_id>0:self.show_response(job_id)
+        else:self.show_detail('History details',self.history_details[row])
+    def connection_settings(self,inventory_kind):
+        from .portal_ui import hosting_settings
+        hosting_settings(self)
     def refresh(self):
         from .dashboard import history_entries
-        profiles = self.store.get('profiles', [])
-        invalid_sites = []
-        for website in self.rate_rows:
-            try: rate_config(self.store.get('website_rates', {}), website)
-            except RateConfigError: invalid_sites.append(website.upper())
-        self.rate_warning.setText('Correct the saved rate in Change Rates before uploading to: ' + ', '.join(invalid_sites))
-        self.rate_warning.setVisible(bool(invalid_sites))
-        rows = self.store.db.execute("SELECT j.*, r.body AS response_body, r.status AS response_status, r.filename AS response_filename, r.kind AS response_kind FROM jobs j LEFT JOIN responses r ON r.id=(SELECT MAX(id) FROM responses WHERE job_id=j.id) ORDER BY j.id DESC").fetchall()
-        entries = history_entries(rows, profiles)
-        for error in self.store.db.execute('SELECT * FROM errors ORDER BY id DESC LIMIT 50'):
-            profile = next((p for p in profiles if p['id'] == error['profile']), {})
-            entries.append(dict(id=None, created=error['created'], kind=profile.get('kind', error['profile']), filename=Path(profile.get('path', '')).name, records='—', result='Failure', detail=error['detail']))
-        entries.sort(key=lambda e: e['created'], reverse=True)
-        counts = {label: sum(e['result'] == label for e in entries) for label in ('Sent to DRC', 'Failure', 'Needs review', 'Blocked')}
-        def last(label):
-            match = next((e for e in entries if e['result'] == label), None)
-            return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(match['created'])) if match else 'None'
-        unsuccessful = next((e for e in entries if e['result'] in ('Failure', 'Blocked', 'Needs review')), None)
-        unsuccessful_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(unsuccessful['created'])) if unsuccessful else 'None'
-        self.metric_values['Sent to DRC'].setText(str(counts['Sent to DRC']))
+        from .portal_ui import refresh_companies
+        profiles=self.store.get('profiles',[])
+        rows=self.store.db.execute("SELECT j.*,r.body AS response_body,r.status AS response_status,r.filename AS response_filename,r.kind AS response_kind FROM jobs j LEFT JOIN responses r ON r.id=(SELECT MAX(id) FROM responses WHERE job_id=j.id) ORDER BY j.id DESC").fetchall()
+        entries=history_entries(rows,profiles)
+        for e in entries:e['kind']='Legacy '+e['kind']
+        for error in self.store.db.execute('SELECT * FROM errors ORDER BY id DESC LIMIT 100'):
+            p=next((p for p in profiles if p['id']==error['profile']),{})
+            entries.append(dict(id=None,created=error['created'],kind=p.get('kind',error['profile']),filename=Path(p.get('path','')).name,records='-',result='Failure',detail=error['detail']))
+        for e in self.store.db.execute('SELECT * FROM portal_history ORDER BY id DESC LIMIT 300'):
+            entries.append(dict(id=-e['id'],created=e['created'],kind=e['name'],filename=e['event'],records=e['records'],result=e['state'],detail=e['detail']))
+        entries.sort(key=lambda e:e['created'],reverse=True)
+        for key,label in [('Sent to DRC','Published to API'),('Needs review','Needs review'),('Failure','Failure')]:self.metric_values[key].setText(str(sum(e['result']==label for e in entries)))
         self.metric_values['Connected files'].setText(str(len(profiles)))
-        self.metric_values['Needs review'].setText(str(counts['Needs review'] + counts['Blocked']))
-        self.metric_values['Failure'].setText(str(counts['Failure']))
-        self.summary.setText('Last successful delivery: ' + last('Sent to DRC') + '\nLast failed upload: ' + last('Failure') + '\nLast issue: ' + unsuccessful_time)
-
-        selected = self.history_filter.currentText()
-        visible = [e for e in entries if selected == 'All results' or e['result'] == selected][:300]
-        self.history.setRowCount(len(visible)); self.history_ids = [e['id'] for e in visible]
-        for row, entry in enumerate(visible):
-            values = [time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(entry['created'])), entry['kind'], entry['filename'], str(entry['records']), entry['result'], entry['detail']]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem('' if column == 4 else value)
-                if column == 4: item.setData(Qt.UserRole,value);item.setToolTip(value)
-                if column == 4: item.setForeground(QColor('#286346' if entry['result'] in ('Sent to DRC', 'Success') else '#8a6222' if entry['result'] in ('Needs review', 'Blocked') else '#a33b35' if entry['result'] == 'Failure' else '#64748b'))
-                if column == 3: item.setTextAlignment(Qt.AlignRight|Qt.AlignVCenter)
-                self.history.setItem(row, column, item)
-                if column == 4: self.history.setCellWidget(row,column,status_badge(entry['result']))
-        for kind, label in self.connection_labels.items():
-            profile = next((p for p in profiles if p['kind'] == kind), None)
-            label.setText((profile['path'] + '\nWorksheet: ' + profile['sheet'] + ' • ' + str(len(profile['mapping'])) + ' mapped columns' + (' • Monitoring enabled' if profile.get('enabled', True) else ' • Monitoring disabled')) if profile else 'No Excel workbook connected')
+        def last(label):
+            e=next((e for e in entries if e['result']==label),None)
+            return time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(e['created'])) if e else 'None'
+        self.summary.setText('Last publication: '+last('Published to API')+'\nLast failure: '+last('Failure')+'\nWebsite imports are not confirmed by publication. Legacy DRC requests remain read-only.')
+        pending=self.store.db.execute("SELECT COUNT(*) FROM portal_jobs WHERE state IN ('pending','publishing')").fetchone()[0]
+        self.rate_warning.setText(str(pending)+' publishing/access operation(s) pending. Check API Access setup if hosting is not ready.');self.rate_warning.setVisible(bool(pending))
+        selected=self.history_filter.currentText();visible=[e for e in entries if selected=='All results' or e['result']==selected][:300]
+        self.history.setRowCount(len(visible));self.history_ids=[e['id'] for e in visible];self.history_details=[e['detail'] for e in visible]
+        for row,e in enumerate(visible):
+            values=[time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(e['created'])),e['kind'],e['filename'],str(e['records']),e['result'],e['detail']]
+            for column,value in enumerate(values):
+                item=QTableWidgetItem('' if column==4 else value);item.setToolTip(value)
+                if column==4:item.setData(Qt.UserRole,value);self.history.setCellWidget(row,column,status_badge(value))
+                self.history.setItem(row,column,item)
+        for kind,label in self.connection_labels.items():
+            p=next((p for p in profiles if p['kind']==kind),None)
+            label.setText((p['path']+'\nWorksheet: '+p['sheet']+' - '+str(len(p['mapping']))+' mapped columns - '+('Monitoring enabled' if p.get('enabled',True) else 'Monitoring disabled')) if p else 'No Excel workbook connected')
+        refresh_companies(self)
     def read_profiles(self):
         text = self.editor.toPlainText().strip()
         if not text:
@@ -429,11 +258,6 @@ class Window(QMainWindow):
                 if not isinstance(p.get('required', []), list) or not isinstance(p.get('numeric', []), list): raise ValueError()
                 if not all(isinstance(k, str) and isinstance(v, str) and k and v for k, v in p['mapping'].items()): raise ValueError()
                 if len(set(p['mapping'].values())) != len(p['mapping']): raise ValueError()
-            old_profiles = {p['id']: p for p in self.store.get('profiles', [])}
-            new_profiles = {p['id']: p for p in profiles}
-            for name, old in old_profiles.items():
-                if new_profiles.get(name) != old:
-                    self.store.db.execute("UPDATE jobs SET state='superseded',payload=NULL WHERE profile=? AND state IN ('pending','retry','blocked')", (name,))
             self.store.set('profiles', profiles)
             self.update_status('Profiles saved')
             return True
@@ -466,8 +290,8 @@ class Window(QMainWindow):
             if inventory_kind:
                 kind.hide();badge=QLabel(inventory_kind+' diamonds');badge.setObjectName('badge');form.addWidget(badge,0,Qt.AlignLeft)
             else:form.addWidget(kind)
-            note=QLabel('Match your Excel columns to DRC fields. Leave a field blank to skip it.');note.setWordWrap(True);note.setObjectName('muted');form.addWidget(note)
-            table=QTableWidget(len(headers),2);table.setObjectName('mappingTable');table.setHorizontalHeaderLabels(['Excel column','DRC field']);configure_table(table,56,False);table.setColumnWidth(0,240);table.setItemDelegateForColumn(0,ColumnLabelDelegate(table))
+            note=QLabel('Match your Excel columns to inventory fields. Leave a field blank to skip it.');note.setWordWrap(True);note.setObjectName('muted');form.addWidget(note)
+            table=QTableWidget(len(headers),2);table.setObjectName('mappingTable');table.setHorizontalHeaderLabels(['Excel column','API field']);configure_table(table,56,False);table.setColumnWidth(0,240);table.setItemDelegateForColumn(0,ColumnLabelDelegate(table))
             used = set()
             for index, header in enumerate(headers):
                 table.setItem(index, 0, QTableWidgetItem(str(header or '')))
@@ -488,10 +312,8 @@ class Window(QMainWindow):
             if persist:
                 if not self.save(): self.reload_profiles()
                 self.refresh()
-        except PermissionError:
-            QMessageBox.warning(self, 'Workbook unavailable', 'Windows denied access to the workbook. Check file permissions or close Excel temporarily, then try again.')
         except Exception as exc:
-            QMessageBox.warning(self, 'Could not add workbook', f'The workbook could not be read or configured ({type(exc).__name__}). Check that it is a valid .xlsx file and choose its worksheet again. Your saved profiles are unchanged.')
+            QMessageBox.warning(self, 'Could not add workbook', workbook_error({'path':path,'kind':inventory_kind or 'Inventory'},exc)+'\nYour saved profiles are unchanged.')
     def auto_map(self):
         try:
             from openpyxl import load_workbook
@@ -510,8 +332,8 @@ class Window(QMainWindow):
                 profile['confirmed'] = False
             self.editor.setPlainText(json.dumps(profiles, indent=2))
             self.update_status('Mappings suggested. Preview the API payload, then save profiles.')
-        except Exception:
-            QMessageBox.warning(self, 'Mapping failed', 'Check each configured workbook and worksheet. No mappings were saved.')
+        except Exception as exc:
+            QMessageBox.warning(self, 'Mapping failed', workbook_error(locals().get('profile',{}),exc)+'\nNo mappings were saved.')
     def preview_payload(self):
         try:
             profiles = self.read_profiles()
@@ -521,7 +343,7 @@ class Window(QMainWindow):
             chosen, ok = choose_item(self, 'Payload preview', 'Choose inventory profile', labels, 0, False)
             if not ok: return
             profile = profiles[labels.index(chosen)]
-            payload = apply_website_rate(parse_excel(profile), self.store.get('website_rates', {}), profile.get('website', 'drc'))
+            payload = parse_excel(profile)
             dialog = QDialog(self); dialog.setWindowTitle('API payload preview — nothing is sent'); dialog.resize(780, 600)
             layout = dialog_layout(dialog)
             layout.addWidget(QLabel(f"Validated {len(payload['diamonds'])} records. Showing the first 10 records."))
@@ -529,10 +351,8 @@ class Window(QMainWindow):
             editor.setReadOnly(True); layout.addWidget(editor)
             buttons = QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
             dialog.exec()
-        except ValueError as exc:
-            QMessageBox.warning(self, 'Invalid payload', str(exc))
-        except Exception:
-            QMessageBox.warning(self, 'Preview failed', 'Check the workbook, worksheet and mapping configuration.')
+        except Exception as exc:
+            QMessageBox.warning(self, 'Inventory preview failed', workbook_error(locals().get('profile',{}),exc))
     def preview(self):
         path, _ = QFileDialog.getOpenFileName(self,'Preview workbook','','Excel (*.xlsx)')
         if not path: return
@@ -546,27 +366,12 @@ class Window(QMainWindow):
                     text = '\n'.join(str(r) for r in islice(wb[sheet].values, 11))
                     QMessageBox.information(self,'First 10 rows',text)
             finally: wb.close()
-        except Exception:
-            QMessageBox.warning(self,'Preview failed','Workbook is unavailable or invalid.')
+        except Exception as exc:
+            QMessageBox.warning(self,'Preview failed',workbook_error({'path':path},exc))
     def save_key(self):
-        try:
-            if not self.key.text().strip(): return
-            save_key(self.kind.currentText(),self.key.text().strip())
-            self.key.clear(); self.update_status('Credential saved securely')
-        except Exception:
-            QMessageBox.warning(self,'Credential error','Windows Credential Manager is unavailable.')
+        QMessageBox.information(self,'Pull publishing','Manage company API access in API Access. DRC upload keys are not used.')
     def retry(self):
-        number, ok = QInputDialog.getInt(self,'Retry inventory push','Job ID',1,1)
-        if not ok: return
-        if QMessageBox.question(self,'Confirm resend','Verify remote inventory first. Resend this job?') != QMessageBox.Yes: return
-        job = self.store.db.execute('SELECT * FROM jobs WHERE id=?',(number,)).fetchone()
-        if job and job['manual']:
-            QMessageBox.information(self, 'Manual send', 'Manual requests are never queued for retry. Use Send once & view response to explicitly prepare and send again.'); return
-        if not job or not job['payload'] or job['state'] in ('sending','superseded','success'): return
-        newer = self.store.db.execute('SELECT 1 FROM jobs WHERE profile=? AND id>?',(job['profile'],number)).fetchone()
-        if newer:
-            QMessageBox.warning(self,'Outdated job','Use the latest snapshot; older jobs cannot be retried.'); return
-        self.store.db.execute("UPDATE jobs SET state='pending',due=0 WHERE id=?",(number,)); self.store.db.commit()
+        QMessageBox.information(self,'Legacy history','Legacy DRC jobs are read-only and cannot be resent. Publish current inventory through the pull API instead.')
     def closeEvent(self,event):
         if QSystemTrayIcon.isSystemTrayAvailable(): self.hide(); event.ignore()
         else: self.exit(); event.accept()
@@ -575,24 +380,22 @@ class Window(QMainWindow):
         self.worker.requestInterruption(); self.worker.wait(); self.tray.hide(); QApplication.quit()
 
 def main():
-    if '--provision-credentials' in sys.argv:
-        from .credentials import provision_shared_credentials
-        try:
-            if not provision_shared_credentials(): raise RuntimeError()
-        except Exception:
-            raise SystemExit(2) from None
-        return
-    if '--credential-self-test' in sys.argv:
-        from .credentials import credential_self_test
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument('--credential-self-test', action='store_true')
-        parser.add_argument('--diagnostics-output', required=True)
-        args = parser.parse_args()
-        report = credential_self_test()
-        Path(args.diagnostics_output).write_text(json.dumps(report, indent=2), encoding='utf-8')
-        if not report['ok']: raise SystemExit(2)
-        return
+    if '--provision-credentials' in sys.argv or '--credential-self-test' in sys.argv:
+        raise SystemExit(2)  # Legacy DRC provisioning is intentionally disabled.
+    if '--portal-self-test' in sys.argv:
+        import argparse,tempfile
+        from .portal_store import PortalStore
+        from .google_mail import SCOPES
+        from .integration_guide import guide_pdf
+        parser=argparse.ArgumentParser();parser.add_argument('--portal-self-test',action='store_true');parser.add_argument('--diagnostics-output',required=True);args=parser.parse_args()
+        with tempfile.TemporaryDirectory() as directory:
+            test_store=PortalStore(Path(directory)/'test.db')
+            company_id=test_store.add_company('Offline test','test@example.com',['Natural'],secret_writer=lambda *a:None)
+            assert test_store.company(company_id)['status']=='Draft'
+            test_store.db.close()
+        pdf=guide_pdf('https://inventory.example.com/api/v1/inventory',['Natural'])
+        report={'ok':pdf.startswith(b'%PDF'),'offline':True,'requests_sent':0,'mode':'pull-only','legacy_dispatch':False,'google_scope_send_only':SCOPES[-1].endswith('gmail.send'),'pdf_ready':True}
+        Path(args.diagnostics_output).write_text(json.dumps(report,indent=2));return
     if '--diagnose' in sys.argv:
         import argparse
         import threading

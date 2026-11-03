@@ -1,44 +1,37 @@
-# Automatic updates (0.6.3)
+# Update delivery for 0.7.0
 
-Clients need to install ChintamaniGemsSetup-0.6.3.exe once to receive the updater.
-Older portable builds do not contain an updater and cannot discover this release.
-After installation the app checks https://chintamani-updates.vercel.app/api/latest
-15 seconds after startup and every six hours. Check for updates is available at
-the bottom of the sidebar. New versions download automatically. Choose Install
-and restart to install; the app finishes current inventory processing first.
-Closing or postponing the prompt keeps monitoring running on the current version.
+The existing signed-update system is preserved. The desktop checks
+https://chintamani-updates.vercel.app/api/latest and downloads a newer signed,
+SHA-256-verified installer. Installation is explicitly confirmed and waits for the
+serialized worker to finish before restarting. Never force-close an active upload.
 
-The installer runs per user without administrator access. App files install in
-%LOCALAPPDATA%\Programs\ChintamaniGems. Profiles/history remain in the existing
-%LOCALAPPDATA%\DRCInventorySync\sync.db and API keys stay in Windows Credential
-Manager. Update installation preserves the startup and shortcut choices recorded
-by the installer. Runtime update checks do not send DRC credentials. The customer installer carries
-a wrapped shared-credential payload for automatic local provisioning.
+Version 0.7.0 replaces direct DRC push with pull-only publication. Its installer is
+prepared locally but **must not replace the stable update channel until private
+inventory hosting and Google OAuth are configured and verified**. The owner has
+not created those services yet. The live stable release remains unchanged.
 
-Build: powershell -ExecutionPolicy Bypass -File packaging/build.ps1
-Requires .venv312 with project dev dependencies and Inno Setup 6.
-Bump drc_sync/version.py, pyproject.toml and packaging/installer.iss together.
-Test before publishing. Version numbers use three numeric components (e.g. 0.6.3).
+Before releasing:
+- Complete `inventory-service/SETUP.md` with the owner.
+- Verify authenticated hosting readiness without publishing production inventory.
+- Configure a production Google Desktop OAuth application/consent screen. A real
+  invitation is sent only by an explicit owner action, never as a development test.
+- Run the full offline suite and packaged self-test with isolated data.
+- Publish the tested installer with the existing sibling updates repository's
+  `npm run publish-release -- <installer> 0.7.0 <notes>` command.
 
-Publishing source is in the separate sibling repository ../chintamani-updates.
-Use its documented npm run publish-release command. Only the signed installer
-metadata is accepted by the publishing APIs; the Blob store token stays on Vercel.
-Keep the release signing private key in ~/.chintamani-release-signing backed up
-privately. Do not ship it. The public verification key is bundled in the app.
-Release signature verification does not provide a Windows Authenticode publisher
-certificate; Windows may display Unknown publisher for this installer.
+The release signing private key stays on the release PC under
+`~/.chintamani-release-signing/ed25519-private.pem`. Never distribute it. The desktop
+contains only its public verification key. Release verification does not provide
+Windows Authenticode signing; Windows may show an unknown-publisher prompt.
 
-Updates use HTTPS, public Vercel Blob URLs, Ed25519 signatures, installer SHA-256
-and size checks. Failed downloads, invalid signatures and older versions are
-never executed. No automatic downgrades. An offline website leaves the existing
-version usable and checks again later. Downloaded installers are cached in the
-user data folder under updates. Private repository or Blob credentials are not
-required on client PCs.
+The installed app folder remains `%LOCALAPPDATA%/Programs/ChintamaniGems`. The existing
+`%LOCALAPPDATA%/DRCInventorySync/sync.db` and old Credential Manager service identity
+remain for compatibility. Portal credentials use a separate service. Existing
+shortcuts/startup choices and the Chintamani Gems app identity are retained.
 
-Only ChintamaniGems.exe is delivered. The legacy DRC-named data directory and
-Credential Manager service remain internal compatibility identifiers so existing
-connections, credentials and history continue to work. They are not a second app.
+## Current publication status — 2026-10-27
 
-The customer installer now provisions the shared Natural and Lab Grown keys
-automatically into Windows Credential Manager. No key entry or readable key file
-is needed. See MANAGED_CREDENTIALS.md for provisioning and its security limits.
+The owner explicitly requested publication after the setup limitations were
+reported. Stable now serves 0.7.0. The earlier pre-release status above is historical;
+private hosting and Google sender setup remain required for live use. The live
+manifest signature and downloaded installer size/SHA-256 were verified.

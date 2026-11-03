@@ -61,7 +61,7 @@ def test_omit_blank_optional_fields(drc_profile):
     assert 'Certificate #' not in record and 'Discount' not in record
 
 
-def test_migrate_old_profiles_and_discard_old_pending_payloads(tmp_path):
+def test_migrate_old_profiles_preserves_read_only_legacy_payloads(tmp_path):
     path=tmp_path/'migration.db'; store=Store(path)
     old={'id':'natural','kind':'Natural','path':'unchanged.xlsx','sheet':'Sheet1','endpoint':OLD_ENDPOINT,
          'mapping':{'No':'stock_id','Carat':'carat'},'required':['stock_id'],'numeric':['carat'],'identity':'stock_id','confirmed':True}
@@ -70,7 +70,7 @@ def test_migrate_old_profiles_and_discard_old_pending_payloads(tmp_path):
     assert p['path']=='unchanged.xlsx' and p['endpoint']==ENDPOINT
     assert p['mapping']=={'No':'StockId','Carat':'Weight'} and not p['confirmed']
     row=store.db.execute('SELECT state,payload FROM jobs').fetchone()
-    assert row['state']=='superseded' and row['payload'] is None
+    assert row['state']=='pending' and 'old' in row['payload']
     store.db.close(); store=Store(path)
     assert store.get('profiles',[])[0]==p
 

@@ -14,7 +14,11 @@ from .diagnostics import failure_detail
 from .rates import rate_config, RateConfigError
 SERVICE = "DRC Inventory Sync"
 
-class FormulaResultError(ValueError):
+class WorkbookValidationError(ValueError):
+    """Validated, user-actionable workbook error safe to display after redaction."""
+
+
+class FormulaResultError(WorkbookValidationError):
     """A mapped formula has no usable result saved by Excel."""
 
 
@@ -46,9 +50,6 @@ class Store:
         self.db.execute("UPDATE jobs SET state='review',detail='Manual send interrupted before dispatch; explicitly send again' WHERE state='manual_ready'")
         profiles = self.get('profiles', [])
         updated = [migrate_profile(p) for p in profiles]
-        for old, new in zip(profiles, updated):
-            if old != new:
-                self.db.execute("UPDATE jobs SET state='superseded',payload=NULL,detail='Request mapping updated; regenerate from workbook' WHERE profile=? AND state IN ('pending','retry','blocked','failed','review')", (old['id'],))
         if updated != profiles:
             self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('profiles', json.dumps(updated)))
         self.db.commit()
@@ -99,13 +100,15 @@ class Store:
 def parse_excel(profile):
     path = Path(profile['path'])
     if path.suffix.lower() != '.xlsx' or path.name.startswith('~$'):
-        raise ValueError('Select a valid .xlsx inventory workbook')
+        raise WorkbookValidationError('Select a valid .xlsx inventory workbook')
     before = (path.stat().st_size, path.stat().st_mtime_ns)
     wb = load_workbook(path, read_only=True, data_only=False)
     cached = None
     try:
         if profile.get('kind') == 'Lab Grown':
             cached = load_workbook(path, read_only=True, data_only=True)
+        if profile['sheet'] not in wb.sheetnames:
+            raise WorkbookValidationError(f"Worksheet '{profile['sheet']}' was not found. Choose the correct worksheet in Excel Mapping.")
         sheet = wb[profile['sheet']]
         rows = sheet.iter_rows()
         headers = [cell.value for cell in next(rows, ())]
@@ -114,11 +117,11 @@ def parse_excel(profile):
         headers = [str(v).strip() if v is not None else '' for v in headers]
         mapping = profile['mapping']
         if not mapping or len(set(mapping.values())) != len(mapping):
-            raise ValueError('Map columns to unique API field names')
+            raise WorkbookValidationError('Column mapping is empty or assigns multiple Excel columns to the same API field. Correct Excel Mapping.')
         for column in mapping:
             if headers.count(column) != 1:
-                raise ValueError(f'Column must exist exactly once: {column}')
-        result = []
+                raise WorkbookValidationError(f"Column '{column}' is missing. Update Excel Mapping to match the workbook headers." if headers.count(column) == 0 else f"Column '{column}' appears more than once. Give each Excel header a unique name.")
+        result = []; source_rows = []
         for number, row in enumerate(rows, 2):
             calculated = next(cached_rows, ()) if cached_rows is not None else ()
             if all(cell.value is None for cell in row):
@@ -130,7 +133,7 @@ def parse_excel(profile):
                 value = cell.value
                 if cell.data_type == 'f':
                     if cached is None:
-                        raise ValueError(f'Row {number}: formulas must be replaced with values')
+                        raise WorkbookValidationError(f"Row {number}, column '{column}': a formula is present. Natural workbooks require saved values instead of formulas.")
                     result_cell = calculated[index] if index < len(calculated) else None
                     if result_cell is None or result_cell.value is None:
                         raise FormulaResultError(f'Row {number}, {column}: formula has no saved result. Open the workbook in Excel, recalculate, then save it again.')
@@ -138,25 +141,25 @@ def parse_excel(profile):
                         raise FormulaResultError(f'Row {number}, {column}: formula result is an Excel error. Correct it in Excel and save again.')
                     value = result_cell.value
                 elif cell.data_type == 'e':
-                    raise ValueError(f'Row {number}, {column}: cell contains an Excel error')
+                    raise WorkbookValidationError(f"Row {number}, column '{column}': cell contains an Excel error. Correct the cell in Excel.")
                 if isinstance(value, str):
                     value = value.strip()
                     if value.startswith('='):
-                        raise ValueError(f'Row {number}: formulas must be replaced with values')
+                        raise WorkbookValidationError(f"Row {number}, column '{column}': a formula is present. Natural workbooks require saved values instead of formulas.")
                 if value is not None and not isinstance(value, (str, int, float, bool)):
-                    raise ValueError(f'Row {number}: unsupported cell type')
+                    raise WorkbookValidationError(f"Row {number}, column '{column}': unsupported cell type. Use text or a number.")
                 if value in (None, '') and profile.get('omit_blank'):
                     continue
-                if field in profile.get('numeric', []) or field in profile.get('decimal_fields', []):
+                if field in profile.get('numeric', []) or field in profile.get('decimal_fields', []) or field == 'PricePerCarat':
                     try:
                         if isinstance(value, bool):
-                            raise ValueError()
+                            raise WorkbookValidationError()
                         number_value = Decimal(str(value))
-                        if not number_value.is_finite() or (field in profile.get('numeric', []) and number_value <= 0):
-                            raise ValueError()
+                        if not number_value.is_finite() or ((field in profile.get('numeric', []) or field == 'PricePerCarat') and number_value <= 0):
+                            raise WorkbookValidationError()
                         value = format(number_value.normalize(), 'f') if field in profile.get('string_fields', []) else float(number_value)
                     except (TypeError, ValueError, InvalidOperation):
-                        raise ValueError(f'Row {number}: {field} has an invalid numeric value')
+                        raise WorkbookValidationError(f"Row {number}, column '{column}' ({field}): invalid numeric value. Enter a {'positive ' if field in profile.get('numeric', []) or field == 'PricePerCarat' else ''}finite number.")
                 elif field in profile.get('string_fields', []) and value is not None:
                     value = str(value)
                 record[field] = value
@@ -167,26 +170,33 @@ def parse_excel(profile):
                     normalized = str(actual_type).upper().replace(' ', '').replace('_', '').replace('-', '').replace('/', '')
                     normalized = {'NATURAL':'NATURAL', 'NATURALDIAMOND':'NATURAL', 'NATURALDIAMONDS':'NATURAL', 'LAB':'LAB_GROWN', 'LABGROWN':'LAB_GROWN', 'LABGROWNDIAMOND':'LAB_GROWN', 'LABGROWNDIAMONDS':'LAB_GROWN', 'LGD':'LAB_GROWN'}.get(normalized)
                     if normalized != expected_type:
-                        raise ValueError(f'Row {number}: Diamond Type does not match the inventory profile')
+                        source_column = next((c for c, f in mapping.items() if f == 'Diamond Type'), 'Diamond Type')
+                        raise WorkbookValidationError(f"Row {number}, column '{source_column}': Diamond Type does not match the {profile['kind']} connection. Correct its value or mapping.")
                 record['Diamond Type'] = expected_type
             for field in profile.get('required', []):
                 if record.get(field) in (None, ''):
-                    raise ValueError(f'Row {number}: missing {field}')
-            result.append(record)
+                    raise WorkbookValidationError(f"Row {number}: missing {field}. Fill the mapped cell or map the correct Excel column.")
+            result.append(record); source_rows.append(number)
         if not result:
-            raise ValueError('Empty inventory blocked: confirm deletion semantics with DRC')
+            raise WorkbookValidationError('Empty inventory blocked. No diamond rows were found; the last published feed will be kept.')
         identity = profile.get('identity', '')
         if identity:
             ids = [r.get(identity) for r in result]
             if any(v in (None, '') for v in ids) or len(set(ids)) != len(ids):
-                raise ValueError('Stock identifiers must be present and unique')
+                seen = {}
+                for row_number, item in zip(source_rows, ids):
+                    if item in (None, ''):
+                        raise WorkbookValidationError(f'Row {row_number}: missing Stock ID. Fill the mapped stock identifier cell.')
+                    if item in seen:
+                        raise WorkbookValidationError(f'Row {row_number}: duplicate Stock ID (also row {seen[item]}). Stock identifiers must be unique.')
+                    seen[item] = row_number
             result.sort(key=lambda r: str(r[identity]))
         json.dumps(result, allow_nan=False)
     finally:
         if cached is not None: cached.close()
         wb.close()
     if before != (path.stat().st_size, path.stat().st_mtime_ns):
-        raise ValueError('Workbook changed while reading; waiting for next scan')
+        raise WorkbookValidationError('Workbook changed while reading; waiting for next scan')
     return {'diamonds': result}
 
 def attempt_snapshot(job, profile, key, state, detail, status=None, elapsed=0, raw=b'', overflow=False, error=''):
