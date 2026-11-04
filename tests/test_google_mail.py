@@ -12,6 +12,7 @@ def test_explicit_gmail_send_contains_key_but_pdf_uses_placeholder():
         calls.append(request);assert request.headers['Authorization']=='Bearer google-token'
         raw=base64.urlsafe_b64decode(json.loads(request.content)['raw']);assert b'cg_read_TEST' in raw
         assert b'Chintamani-Gems-API-Guide.pdf' in raw
+        assert b'natural' in raw and b'lab_grown' in raw
         return httpx.Response(200,json={'id':'accepted-id'})
     with httpx.Client(transport=httpx.MockTransport(accept)) as client:assert send(client)=='accepted-id'
     assert len(calls)==1

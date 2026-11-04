@@ -31,6 +31,30 @@ def test_smtp_auth(sender, password, host='smtp.gmail.com', port=465, timeout=15
         raise MailError(f'Could not connect to Gmail SMTP ({type(exc).__name__}): {exc}') from None
 
 
+def invitation_email_text(company, api_url, key):
+    kinds = ', '.join(json.loads(company['kinds']))
+    return (
+        f"Hello {company['name']},\n\n"
+        "Your read-only inventory API is ready.\n\n"
+        f"- Endpoint: {api_url}\n"
+        "- HTTP Method: GET\n"
+        "- Authentication Header: x-api-key\n"
+        f"- API Key: {key}\n"
+        f"- Inventory Scope: {kinds}\n\n"
+        "Response Format:\n"
+        "The inventory is returned as a JSON snapshot with two separate arrays:\n"
+        '- "natural": [ ... ] (Natural diamonds)\n'
+        '- "lab_grown": [ ... ] (Lab grown diamonds)\n\n'
+        "Quick Test (cURL):\n"
+        f'curl -X GET "{api_url}" -H "x-api-key: {key}"\n\n'
+        "Important Notes:\n"
+        "- Prices already include your agreed company price adjustment.\n"
+        "- Response headers include 'X-Inventory-Records' (total count) and 'X-Inventory-Published-At' (timestamp).\n"
+        "- Please keep your API key secure and confidential.\n\n"
+        "The complete integration guide is attached as a PDF.\n\n"
+        "Chintamani Gems"
+    )
+
 def send_smtp_invitation(company, key, api_url, pdf_bytes, sender=None, password=None, host='smtp.gmail.com', port=465, timeout=45):
     """Send an invitation email using Gmail App Password via SMTP SSL."""
     sender = sender or portal_secrets.get_secret('google-smtp-sender') or portal_secrets.get_secret('google-sender')
@@ -48,7 +72,7 @@ def send_smtp_invitation(company, key, api_url, pdf_bytes, sender=None, password
     message['To'] = recipient
     message['Subject'] = 'Chintamani Gems - Inventory API access'
     message['Message-ID'] = __import__('email.utils', fromlist=['make_msgid']).make_msgid(domain='chintamanigems.local')
-    message.set_content('Hello ' + company['name'] + ',\n\nYour read-only inventory API is ready.\n\nURL: ' + api_url + '\nHTTP method: GET\nAuthentication header: x-api-key\nAPI key: ' + key + '\nArray data keys: natural, lab_grown\n\nInventory types: ' + ', '.join(json.loads(company['kinds'])) + '\n\nThe response is a full snapshot of the latest published inventory. Prices already include your configured adjustment. Please keep this key private. The integration guide is attached.\n\nChintamani Gems')
+    message.set_content(invitation_email_text(company, api_url, key))
     message.add_attachment(pdf_bytes, maintype='application', subtype='pdf', filename='Chintamani-Gems-API-Guide.pdf')
 
     try:
@@ -122,7 +146,7 @@ def send_invitation(company, key, api_url, pdf_bytes, http=None, credential_prov
     message=EmailMessage();message['From']=sender;message['To']=recipient
     message['Subject']='Chintamani Gems - Inventory API access'
     message['Message-ID']=__import__('email.utils',fromlist=['make_msgid']).make_msgid(domain='chintamanigems.local')
-    message.set_content('Hello '+company['name']+',\n\nYour read-only inventory API is ready.\n\nURL: '+api_url+'\nHTTP method: GET\nAuthentication header: x-api-key\nAPI key: '+key+'\nArray data keys: natural, lab_grown\n\nInventory types: '+', '.join(json.loads(company['kinds']))+'\n\nThe response is a full snapshot of the latest published inventory. Prices already include your configured adjustment. Please keep this key private. The integration guide is attached.\n\nChintamani Gems')
+    message.set_content(invitation_email_text(company, api_url, key))
     message.add_attachment(pdf_bytes,maintype='application',subtype='pdf',filename='Chintamani-Gems-API-Guide.pdf')
     owned=http is None;http=http or httpx.Client(timeout=45,follow_redirects=False)
     try:
