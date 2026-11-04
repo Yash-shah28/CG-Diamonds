@@ -50,8 +50,10 @@ class PortalClient:
     def publish(self, job):
         raw=job['payload'].encode('utf-8');sha=hashlib.sha256(raw).hexdigest()
         if len(raw)>MAX_SNAPSHOT:raise HostingError('Prepared feed exceeds the 64 MB upload limit.',False)
+        payload_data = json.loads(raw)
+        records_count = len(payload_data['diamonds']) if 'diamonds' in payload_data else (len(payload_data.get('natural', [])) + len(payload_data.get('lab_grown', [])))
         metadata={'client_id':job['client_id'],'revision':job['revision'],'key_hash':job['key_hash'],
-                  'kinds':json.loads(job['kinds']),'sha256':sha,'size':len(raw),'records':len(json.loads(raw)['diamonds'])}
+                  'kinds':json.loads(job['kinds']),'sha256':sha,'size':len(raw),'records':records_count}
         intent=self.admin({'action':'authorize',**metadata})
         if not intent.get('already_published'):
             url=intent.get('upload_url','');u=urlsplit(url)

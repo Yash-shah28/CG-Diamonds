@@ -24,3 +24,26 @@ test('revocation and suspension cannot be undone by stale jobs',async()=>{for(co
 test('integrity and scope mismatch leave old feed active',async()=>{const storage=new Memory(),s=createService(storage,sha256(token));await publish(s,storage,meta());const bad=meta('a'.repeat(32),2,key1,[record('LAB','LAB_GROWN')]);await assert.rejects(()=>publish(s,storage,bad),{status:400});const corrupt=meta('a'.repeat(32),2);storage.snapshot(corrupt.m,Buffer.from('bad'));await assert.rejects(()=>s.admin(header,{action:'commit',...corrupt.m}),{status:400});assert.equal((await s.inventory(key1)).records,1);});
 test('different companies cannot share key or read each other snapshots',async()=>{const storage=new Memory(),s=createService(storage,sha256(token));await publish(s,storage,meta());await assert.rejects(()=>publish(s,storage,meta('d'.repeat(32),1,key1)),{status:409});await publish(s,storage,meta('d'.repeat(32),1,key2,[record('B1')]));const r=await s.inventory(key2);assert.equal(JSON.parse(await new Response(r.stream).text()).diamonds[0].StockId,'B1');});
 test('partial or duplicate inventory is rejected',async()=>{const storage=new Memory(),s=createService(storage,sha256(token));for(const records of [[record(),record()],[{...record(),StockId:''}]])await assert.rejects(()=>publish(s,storage,meta('a'.repeat(32),1,key1,records)),{status:400});});
+
+test('two array split natural and lab_grown publication and response', async () => {
+  const storage = new Memory(), s = createService(storage, sha256(token));
+  const nat = record('NAT-1', 'NATURAL');
+  const lab = record('LAB-1', 'LAB_GROWN');
+  const raw = Buffer.from(JSON.stringify({ natural: [nat], lab_grown: [lab] }));
+  const m = {
+    client_id: 'c'.repeat(32),
+    revision: 1,
+    key_hash: sha256(key1),
+    sha256: sha256(raw),
+    size: raw.length,
+    records: 2,
+    kinds: ['Natural', 'Lab Grown']
+  };
+  storage.snapshot(m, raw);
+  await s.admin(header, { action: 'commit', ...m });
+  const result = await s.inventory(key1);
+  assert.equal(result.records, 2);
+  const body = JSON.parse(await new Response(result.stream).text());
+  assert.deepEqual(body.natural, [nat]);
+  assert.deepEqual(body.lab_grown, [lab]);
+});

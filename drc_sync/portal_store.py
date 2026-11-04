@@ -74,7 +74,7 @@ class PortalStore(Store):
         self.db.commit()
 
     def compose(self, company):
-        combined = []; seen = set()
+        natural = []; lab_grown = []; seen = set()
         for kind in json.loads(company['kinds']):
             row = self.db.execute('SELECT * FROM portal_cache WHERE kind=?',(kind,)).fetchone()
             if not row: raise WorkbookValidationError(f'{kind}: no validated inventory is available. Connect and publish its workbook first.')
@@ -83,6 +83,7 @@ class PortalStore(Store):
             cached_profile = json.loads(row['profile'])
             if current is None or any(current.get(k) != cached_profile.get(k) for k in ('id','path','sheet','mapping','required','numeric','decimal_fields','request_format')):
                 raise WorkbookValidationError(f'{kind}: the Excel connection changed. Publish inventory again to validate the current file.')
+            target_list = natural if kind == 'Natural' else lab_grown
             for number, original in enumerate(json.loads(row['payload'])['diamonds'],2):
                 record = dict(original); record['Diamond Type'] = API_TYPES[kind]
                 stock = record.get('StockId')
@@ -97,8 +98,8 @@ class PortalStore(Store):
                         raise ValueError()
                 except (ValueError,InvalidOperation):
                     raise WorkbookValidationError(f'{kind}, row {number}, PricePerCarat: enter a positive finite price per carat.') from None
-                combined.append(record)
-        return apply_website_rate({'diamonds':combined},{'client':{'mode':company['mode'],'percent':company['percent']}},'client')
+                target_list.append(record)
+        return apply_website_rate({'natural':natural,'lab_grown':lab_grown},{'client':{'mode':company['mode'],'percent':company['percent']}},'client')
 
     def queue(self, client_id, action='publish', force=False):
         company = self.company(client_id)
@@ -160,7 +161,8 @@ class PortalStore(Store):
         if c['revision'] == job['revision']:
             self.db.execute('UPDATE portal_companies SET status=? WHERE id=?',('Awaiting retry' if retry else state.title(),c['id']))
         if state == 'published':
-            count = len(json.loads(job['payload'])['diamonds'])
+            payload_data = json.loads(job['payload'])
+            count = len(payload_data['diamonds']) if 'diamonds' in payload_data else (len(payload_data.get('natural', [])) + len(payload_data.get('lab_grown', [])))
             self.db.execute('UPDATE portal_companies SET published=?,published_at=? WHERE id=?',(count,time.time(),c['id']))
         else:count=0
         self.db.commit()

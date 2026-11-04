@@ -145,3 +145,16 @@ Published at the owner's explicit request despite incomplete hosting/Google setu
 Verified the live stable manifest's Ed25519 signature and version 0.7.0, then
 retrieved the public download and verified its exact 52,792,758-byte length and
 SHA-256 against the signed manifest. No production inventory/email was sent.
+
+## Version 0.7.4 update button repair (2026-11-03)
+
+The project was located in the renamed Desktop/Diamond directory. Verified that
+live signed release discovery returns HTTP 200 and stable version 0.7.3. Corrected
+source-mode updater initialization and manual clicks during automatic checks.
+Source mode checks for releases and reports installer availability without trying
+to replace the Python environment. Explicit test-mode disabling is now visible.
+All 189 regression tests passed, including 30 update tests. No inventory requests,
+real emails, production data changes or stable-channel publication were performed.
+Frozen source matched the tested code. The offline executable diagnostic passed
+with zero requests. The 0.7.4 installer compiled successfully; SHA-256 is recorded
+in release/SHA256SUMS-0.7.4.txt. Existing installation and stable feed unchanged.

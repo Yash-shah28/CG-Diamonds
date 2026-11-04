@@ -127,3 +127,55 @@ def test_installation_folder_branding(tmp_path,monkeypatch,folder,expected):
     monkeypatch.setattr(u.sys,'frozen',True,raising=False)
     monkeypatch.setattr(u.sys,'executable',str(tmp_path/folder/'ChintamaniGems.exe'))
     assert u.installation_dir()==tmp_path/expected
+
+
+def test_manual_click_during_automatic_check_shows_result(tmp_path,monkeypatch):
+    import os
+    os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+    from types import SimpleNamespace
+    from PySide6.QtCore import QObject,Signal
+    from PySide6.QtWidgets import QApplication,QWidget,QToolButton,QMessageBox
+    from drc_sync.update_ui import UpdateController
+    app=QApplication.instance() or QApplication([])
+    class Worker(QObject):
+        finished=Signal()
+    window=QWidget();window.update_button=QToolButton(window);window.worker=Worker(window)
+    controller=UpdateController(window,tmp_path);controller.timer.stop()
+    controller.task=SimpleNamespace(isRunning=lambda:True)
+    messages=[]
+    monkeypatch.setattr(QMessageBox,'information',lambda *args:messages.append(args[2]))
+    window.update_button.click()
+    assert controller.manual and 'Checking' in window.update_button.text()
+    controller.received(None,None)
+    assert len(messages)==1 and 'latest published version' in messages[0]
+    controller.task=None;window.deleteLater();app.processEvents()
+
+
+def test_source_check_reports_available_without_installing(tmp_path,monkeypatch):
+    import os
+    os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+    from PySide6.QtCore import QObject,Signal
+    from PySide6.QtWidgets import QApplication,QWidget,QToolButton,QMessageBox
+    from drc_sync.update_ui import UpdateController
+    app=QApplication.instance() or QApplication([])
+    class Worker(QObject):
+        finished=Signal()
+    window=QWidget();window.update_button=QToolButton(window);window.worker=Worker(window)
+    controller=UpdateController(window,tmp_path,can_install=False);controller.timer.stop();controller.manual=True
+    messages=[]
+    monkeypatch.setattr(QMessageBox,'information',lambda *args:messages.append(args[2]))
+    controller.received({'version':'99.0.0'},None)
+    assert not controller.ready and not controller.installing
+    assert len(messages)==1 and 'Python source' in messages[0] and 'api/download' in messages[0]
+    window.deleteLater();app.processEvents()
+
+
+def test_source_task_does_not_download_installer(tmp_path,monkeypatch):
+    import drc_sync.update_ui as ui
+    from contextlib import nullcontext
+    monkeypatch.setattr(ui,'update_client',lambda:nullcontext(object()))
+    monkeypatch.setattr(ui,'latest',lambda client:{'version':'99.0.0'})
+    monkeypatch.setattr(ui,'download',lambda *args:pytest.fail('Source checks must not download an installer'))
+    task=ui.UpdateTask(tmp_path,download_installer=False);results=[]
+    task.result.connect(lambda release,path:results.append((release,path)));task.run()
+    assert results==[({'version':'99.0.0'},None)]

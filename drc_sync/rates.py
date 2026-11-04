@@ -31,7 +31,14 @@ def apply_website_rate(payload, settings, website='drc'):
     if not percent:
         return adjusted
     factor = Decimal(1) + (percent if mode == 'increase' else -percent) / Decimal(100)
-    for number, record in enumerate(adjusted['diamonds'], 1):
+    records = []
+    if 'diamonds' in adjusted:
+        records.extend(adjusted['diamonds'])
+    if 'natural' in adjusted and isinstance(adjusted['natural'], list):
+        records.extend(adjusted['natural'])
+    if 'lab_grown' in adjusted and isinstance(adjusted['lab_grown'], list):
+        records.extend(adjusted['lab_grown'])
+    for number, record in enumerate(records, 1):
         try:
             original = record['PricePerCarat']
             if isinstance(original, bool): raise ValueError()

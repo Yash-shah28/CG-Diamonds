@@ -30,3 +30,13 @@ def test_invalid_adjusted_prices_blocked(price):
 @pytest.mark.parametrize('mode,percent,expected',[('increase','100','10000.00'),('increase','0','5000'),('discount','99.99','0.50')])
 def test_new_percentage_boundaries(mode,percent,expected):
     assert apply_website_rate({'diamonds':[{'PricePerCarat':'5000'}]},{'drc':{'mode':mode,'percent':percent}})['diamonds'][0]['PricePerCarat']==expected
+
+
+def test_apply_rate_to_two_arrays():
+    payload = {
+        'natural': [{'PricePerCarat': '1000', 'StockId': 'N1'}],
+        'lab_grown': [{'PricePerCarat': '500', 'StockId': 'L1'}]
+    }
+    result = apply_website_rate(payload, {'client': {'mode': 'increase', 'percent': '10'}}, 'client')
+    assert result['natural'][0]['PricePerCarat'] == '1100.00'
+    assert result['lab_grown'][0]['PricePerCarat'] == '550.00'

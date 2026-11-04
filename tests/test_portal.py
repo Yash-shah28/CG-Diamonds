@@ -24,8 +24,10 @@ def add(store,kinds=None,**kwargs):return store.add_company('Company','dev@examp
 
 def test_independent_company_prices_and_original_inventory(prepared):
     s,p=prepared;a=add(s,mode='increase',percent='10');b=add(s,mode='discount',percent='5')
-    assert s.compose(s.company(a))['diamonds'][0]['PricePerCarat']=='110.00'
-    assert s.compose(s.company(b))['diamonds'][0]['PricePerCarat']=='95.00'
+    assert s.compose(s.company(a))['natural'][0]['PricePerCarat']=='110.00'
+    assert s.compose(s.company(a))['lab_grown']==[]
+    assert s.compose(s.company(b))['natural'][0]['PricePerCarat']=='95.00'
+    assert s.compose(s.company(b))['lab_grown']==[]
     assert json.loads(s.db.execute("SELECT payload FROM portal_cache WHERE kind='Natural'").fetchone()[0])['diamonds'][0]['PricePerCarat']=='100'
 
 @pytest.mark.parametrize('mode,percent,valid',[('increase','100',True),('increase','100.01',False),('discount','99.99',True),('discount','100',False),('discount','-1',False)])
@@ -37,8 +39,10 @@ def test_company_boundaries(prepared,mode,percent,valid):
 
 def test_scope_and_combined_type_identity(prepared):
     s,_=prepared;a=add(s,['Lab Grown']);b=add(s,['Natural','Lab Grown'])
-    assert [d['Diamond Type'] for d in s.compose(s.company(a))['diamonds']]==['LAB_GROWN']
-    assert len(s.compose(s.company(b))['diamonds'])==2
+    assert [d['Diamond Type'] for d in s.compose(s.company(a))['lab_grown']]==['LAB_GROWN']
+    assert s.compose(s.company(a))['natural']==[]
+    assert len(s.compose(s.company(b))['natural'])==1
+    assert len(s.compose(s.company(b))['lab_grown'])==1
 
 def test_changed_connection_does_not_use_stale_cache(prepared):
     s,p=prepared;c=add(s);p[0]['sheet']='Other';s.set('profiles',p)
@@ -48,7 +52,7 @@ def test_price_save_queues_immediately_and_supersedes_only_unsent_snapshots(prep
     s,_=prepared;c=add(s);first=s.queue(c);s.set_rate(c,'increase','15')
     jobs=s.db.execute('SELECT * FROM portal_jobs ORDER BY id').fetchall()
     assert jobs[0]['state']=='superseded' and jobs[1]['revision']>jobs[0]['revision']
-    assert json.loads(jobs[1]['payload'])['diamonds'][0]['PricePerCarat']=='115.00'
+    assert json.loads(jobs[1]['payload'])['natural'][0]['PricePerCarat']=='115.00'
 
 def test_access_changes_precede_publication_even_during_retry_backoff(prepared):
     s,_=prepared;c=add(s,['Natural','Lab Grown']);s.queue(c);s.change_scope(c,['Natural'])

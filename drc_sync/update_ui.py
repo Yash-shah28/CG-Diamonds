@@ -11,14 +11,15 @@ class UpdateTask(QThread):
     result = Signal(object, object)
     failed = Signal(str)
 
-    def __init__(self, folder, parent=None):
+    def __init__(self, folder, parent=None, download_installer=True):
         super().__init__(parent); self.folder = folder
+        self.download_installer = download_installer
 
     def run(self):
         try:
             with update_client() as client:
                 release = latest(client)
-                path = download(client, release, self.folder) if release else None
+                path = download(client, release, self.folder) if release and self.download_installer else None
             self.result.emit(release, path)
         except Exception as exc:
             # Exception text can include URLs or proxy credentials; never display it.
@@ -26,10 +27,11 @@ class UpdateTask(QThread):
 
 
 class UpdateController(QObject):
-    def __init__(self, window, folder):
+    def __init__(self, window, folder, can_install=True):
         super().__init__(window)
         self.window = window; self.folder = Path(folder); self.task = None
         self.ready = None; self.manual = False; self.installing = False
+        self.can_install = can_install
         self.timer = QTimer(self); self.timer.setInterval(6 * 60 * 60 * 1000)
         self.timer.timeout.connect(self.check); self.timer.start()
         QTimer.singleShot(15000, self, self.check)
@@ -43,21 +45,36 @@ class UpdateController(QObject):
             self.check(True)
 
     def check(self, manual=False):
-        if self.installing or (self.task and self.task.isRunning()):
+        if self.installing:
+            return
+        if self.task and self.task.isRunning():
+            if manual:
+                self.manual = True
+                self.window.update_button.setText("Checking for updates...")
+                self.window.update_button.setToolTip("An update check is already running. Its result will be shown when it finishes.")
             return
         if self.ready:
             return
         self.manual = manual
         self.window.update_button.setText('Checking for updates…')
-        self.task = UpdateTask(self.folder, self)
+        self.window.update_button.setToolTip("Checking the signed release feed and downloading any newer installer.")
+        self.task = UpdateTask(self.folder, self, download_installer=self.can_install)
         self.task.result.connect(self.received); self.task.failed.connect(self.failed)
         self.task.start()
 
     def received(self, release, path):
+        self.window.update_button.setToolTip("Chintamani Gems "+VERSION)
         if not release:
             self.window.update_button.setText('Check for updates')
             if self.manual:
                 QMessageBox.information(self.window, 'Application updates', f'You are using the latest published version ({VERSION}).')
+            return
+        if not self.can_install:
+            self.window.update_button.setText("Check for updates")
+            if self.manual:
+                QMessageBox.information(self.window, "Update available",
+                    "Version "+release["version"]+" is available. You are running the Python source version. "
+                    "Download the Windows installer from https://chintamani-updates.vercel.app/api/download to install it.")
             return
         self.ready = (release, path)
         self.window.update_button.setText('Install update '+release['version'])

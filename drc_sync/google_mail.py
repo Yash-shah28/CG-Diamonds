@@ -48,7 +48,7 @@ def send_smtp_invitation(company, key, api_url, pdf_bytes, sender=None, password
     message['To'] = recipient
     message['Subject'] = 'Chintamani Gems - Inventory API access'
     message['Message-ID'] = __import__('email.utils', fromlist=['make_msgid']).make_msgid(domain='chintamanigems.local')
-    message.set_content('Hello ' + company['name'] + ',\n\nYour read-only inventory API is ready.\n\nURL: ' + api_url + '\nHTTP method: GET\nAuthentication header: x-api-key\nAPI key: ' + key + '\nArray data key: diamonds\n\nInventory types: ' + ', '.join(json.loads(company['kinds'])) + '\n\nThe response is a full snapshot of the latest published inventory. Prices already include your configured adjustment. Please keep this key private. The integration guide is attached.\n\nChintamani Gems')
+    message.set_content('Hello ' + company['name'] + ',\n\nYour read-only inventory API is ready.\n\nURL: ' + api_url + '\nHTTP method: GET\nAuthentication header: x-api-key\nAPI key: ' + key + '\nArray data keys: natural, lab_grown\n\nInventory types: ' + ', '.join(json.loads(company['kinds'])) + '\n\nThe response is a full snapshot of the latest published inventory. Prices already include your configured adjustment. Please keep this key private. The integration guide is attached.\n\nChintamani Gems')
     message.add_attachment(pdf_bytes, maintype='application', subtype='pdf', filename='Chintamani-Gems-API-Guide.pdf')
 
     try:
@@ -122,7 +122,7 @@ def send_invitation(company, key, api_url, pdf_bytes, http=None, credential_prov
     message=EmailMessage();message['From']=sender;message['To']=recipient
     message['Subject']='Chintamani Gems - Inventory API access'
     message['Message-ID']=__import__('email.utils',fromlist=['make_msgid']).make_msgid(domain='chintamanigems.local')
-    message.set_content('Hello '+company['name']+',\n\nYour read-only inventory API is ready.\n\nURL: '+api_url+'\nHTTP method: GET\nAuthentication header: x-api-key\nAPI key: '+key+'\nArray data key: diamonds\n\nInventory types: '+', '.join(json.loads(company['kinds']))+'\n\nThe response is a full snapshot of the latest published inventory. Prices already include your configured adjustment. Please keep this key private. The integration guide is attached.\n\nChintamani Gems')
+    message.set_content('Hello '+company['name']+',\n\nYour read-only inventory API is ready.\n\nURL: '+api_url+'\nHTTP method: GET\nAuthentication header: x-api-key\nAPI key: '+key+'\nArray data keys: natural, lab_grown\n\nInventory types: '+', '.join(json.loads(company['kinds']))+'\n\nThe response is a full snapshot of the latest published inventory. Prices already include your configured adjustment. Please keep this key private. The integration guide is attached.\n\nChintamani Gems')
     message.add_attachment(pdf_bytes,maintype='application',subtype='pdf',filename='Chintamani-Gems-API-Guide.pdf')
     owned=http is None;http=http or httpx.Client(timeout=45,follow_redirects=False)
     try:

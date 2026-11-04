@@ -21,7 +21,7 @@ def test_rates_are_company_rows_and_save_republishes(prepared,monkeypatch):
     w=Window(s.db.execute('PRAGMA database_list').fetchone()[2]);w.navigate(3);row=w.rate_rows[cid]
     row['mode'].setCurrentIndex(1);row['percent'].setValue(12.5);w.save_rate(cid)
     assert w.store.company(cid)['percent']=='12.5'
-    assert json.loads(w.store.db.execute('SELECT payload FROM portal_jobs').fetchone()[0])['diamonds'][0]['PricePerCarat']=='112.50'
+    assert json.loads(w.store.db.execute('SELECT payload FROM portal_jobs').fetchone()[0])['natural'][0]['PricePerCarat']=='112.50'
     assert w.clients_table.rowCount()==1;cleanup(w,app)
 
 def test_new_error_not_suppressed_by_previous_different_error(tmp_path,monkeypatch):

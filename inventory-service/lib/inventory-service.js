@@ -43,9 +43,24 @@ export function createService(storage,adminHash){
   const raw=await storage.bytes(path,MAX_SNAPSHOT);
   if(raw.length!==m.size||!same(sha256(raw),m.sha256))throw new ApiError(400,'Snapshot integrity check failed');
   let payload;try{payload=JSON.parse(raw.toString('utf8'));}catch{throw new ApiError(400,'Snapshot must contain JSON');}
-  if(!payload||!Array.isArray(payload.diamonds)||payload.diamonds.length!==m.records)throw new ApiError(400,'Snapshot record count mismatch');
+  if(!payload||typeof payload!=='object')throw new ApiError(400,'Snapshot must contain JSON');
+  let diamonds;
+  if(Array.isArray(payload.diamonds)){
+   diamonds=payload.diamonds;
+  }else if(payload.natural!==undefined||payload.lab_grown!==undefined){
+   if(payload.natural!==undefined&&!Array.isArray(payload.natural))throw new ApiError(400,'Snapshot natural field must be an array');
+   if(payload.lab_grown!==undefined&&!Array.isArray(payload.lab_grown))throw new ApiError(400,'Snapshot lab_grown field must be an array');
+   const natural=Array.isArray(payload.natural)?payload.natural:[];
+   const lab_grown=Array.isArray(payload.lab_grown)?payload.lab_grown:[];
+   for(const d of natural){if(d&&typeof d==='object'&&!d['Diamond Type'])d['Diamond Type']='NATURAL';}
+   for(const d of lab_grown){if(d&&typeof d==='object'&&!d['Diamond Type'])d['Diamond Type']='LAB_GROWN';}
+   diamonds=[...natural,...lab_grown];
+  }else{
+   throw new ApiError(400,'Snapshot record count mismatch');
+  }
+  if(diamonds.length!==m.records)throw new ApiError(400,'Snapshot record count mismatch');
   const allowed=new Set(m.kinds.map(k=>k==='Natural'?'NATURAL':'LAB_GROWN'));const identities=new Set();
-  for(const diamond of payload.diamonds){
+  for(const diamond of diamonds){
    if(!diamond||typeof diamond!=='object'||!allowed.has(diamond['Diamond Type'])||!String(diamond.StockId??'').trim())throw new ApiError(400,'Snapshot contains an invalid record or inventory type');
    const identity=diamond['Diamond Type']+'\0'+diamond.StockId;if(identities.has(identity))throw new ApiError(400,'Snapshot contains duplicate stock identifiers');identities.add(identity);
   }

@@ -451,9 +451,12 @@ def main():
             QMessageBox.information(None, 'App is starting', 'The app is still starting or an older version is running. Open it from the Chintamani Gems tray icon, or exit that copy and reopen this version.')
         return
     window = Window(root/'sync.db')
-    if getattr(sys, 'frozen', False) and os.environ.get('CHINTAMANI_DISABLE_UPDATES') != '1':
+    if os.environ.get('CHINTAMANI_DISABLE_UPDATES') != '1':
         from .update_ui import UpdateController
-        window.updater = UpdateController(window, root/'updates')
+        window.updater = UpdateController(window, root/'updates', can_install=bool(getattr(sys, 'frozen', False)))
+    else:
+        window.update_button.setEnabled(False)
+        window.update_button.setToolTip('Updates are disabled for this test session.')
     if not startup or not QSystemTrayIcon.isSystemTrayAvailable(): window.show()
     instance.activated.connect(window.open_window)
     try:
