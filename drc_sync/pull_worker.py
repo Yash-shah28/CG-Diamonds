@@ -96,7 +96,8 @@ class PullWorker(QThread):
         try:
             client=PortalClient(store.get('portal_hosting',{}))
             if job['action']=='publish':
-                result=client.publish(job)
+                c=store.company(job['client_id'])
+                result=client.publish(job, company_name=c['name'])
                 if result.get('revision')!=job['revision']:raise HostingError('Hosting did not confirm this feed revision.')
                 store.finish_portal(job,'published','Published to API. Import results from the receiving website are not confirmed.')
                 self.published.emit(store.company(job['client_id'])['name'])

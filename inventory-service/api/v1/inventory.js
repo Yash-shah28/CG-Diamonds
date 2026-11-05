@@ -20,7 +20,8 @@ export default async function handler(req,res){
    if(typeof body==='string'){try{body=JSON.parse(body);}catch{throw new ApiError(400,'Invalid JSON body');}}
    const service=createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256);
    const result=await service.feedback(key,body);
-   console.log(`[API FEEDBACK] Company ID: ${result.client_id} | IP: ${clientIp} | Succeeded: ${result.summary.success_count} | Failed: ${result.summary.failed_count} | Tool: ${userAgent}`);
+   const companyLabel=result.company_name?`"${result.company_name}" (${result.client_id})`:`ID: ${result.client_id}`;
+   console.log(`[API FEEDBACK] Company: ${companyLabel} | IP: ${clientIp} | Succeeded: ${result.summary.success_count} | Failed: ${result.summary.failed_count} | Tool: ${userAgent}`);
    return res.status(200).json(result);
   }catch(e){
    console.warn(`[API FEEDBACK ERROR] IP: ${clientIp} | Tool: ${userAgent} | Error: ${e.message}`);
@@ -32,7 +33,7 @@ export default async function handler(req,res){
  if(req.method!=='GET'){res.setHeader('Allow','GET, POST, OPTIONS');return res.status(405).end();}
  try{
   const result=await createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256).inventory(key,{ip:clientIp,userAgent});
-  console.log(`[INVENTORY FETCH] Company ID: ${result.client_id} | IP: ${clientIp} | Tool: ${userAgent} | Diamonds: ${result.records}`);
+  const companyLabel=result.company_name?`"${result.company_name}" (${result.client_id})`:`ID: ${result.client_id}`;
   res.setHeader('Content-Type','application/json; charset=utf-8');
   res.setHeader('X-Inventory-Records',String(result.records));
   res.setHeader('X-Inventory-Snapshot',result.snapshot_id);
@@ -47,6 +48,8 @@ export default async function handler(req,res){
   const raw=Buffer.concat(chunks).toString('utf8');
   let data;
   try{data=JSON.parse(raw);}catch{data=null;}
+  let naturalCount=0;
+  let labGrownCount=0;
   if(data&&Array.isArray(data.diamonds)){
    const natural=[];
    const lab_grown=[];
@@ -54,9 +57,18 @@ export default async function handler(req,res){
     if(d&&d['Diamond Type']==='LAB_GROWN')lab_grown.push(d);
     else natural.push(d);
    }
+   naturalCount=natural.length;
+   labGrownCount=lab_grown.length;
    data={natural,lab_grown};
+   console.log(`[INVENTORY FETCH] Company: ${companyLabel} | IP: ${clientIp} | Tool: ${userAgent} | Natural: ${naturalCount} | Lab Grown: ${labGrownCount} | Total: ${naturalCount+labGrownCount}`);
    return res.status(200).send(JSON.stringify(data));
+  }else if(data&&(Array.isArray(data.natural)||Array.isArray(data.lab_grown))){
+   naturalCount=Array.isArray(data.natural)?data.natural.length:0;
+   labGrownCount=Array.isArray(data.lab_grown)?data.lab_grown.length:0;
+   console.log(`[INVENTORY FETCH] Company: ${companyLabel} | IP: ${clientIp} | Tool: ${userAgent} | Natural: ${naturalCount} | Lab Grown: ${labGrownCount} | Total: ${naturalCount+labGrownCount}`);
+   return res.status(200).send(raw);
   }
+  console.log(`[INVENTORY FETCH] Company: ${companyLabel} | IP: ${clientIp} | Tool: ${userAgent} | Total: ${result.records}`);
   return res.status(200).send(raw);
  }catch(e){
   console.warn(`[INVENTORY FETCH FAILED] IP: ${clientIp} | Tool: ${userAgent} | Error: ${e.message}`);
