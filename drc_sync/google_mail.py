@@ -33,9 +33,13 @@ def test_smtp_auth(sender, password, host='smtp.gmail.com', port=465, timeout=15
 
 def invitation_email_text(company, api_url, key):
     kinds = ', '.join(json.loads(company['kinds']))
+    feedback_url = api_url.replace('/inventory', '/feedback')
     return (
         f"Hello {company['name']},\n\n"
         "Your read-only inventory API is ready.\n\n"
+        "----------------------------------------\n"
+        "Step 1: Fetch Diamonds (GET)\n"
+        "----------------------------------------\n"
         f"- Endpoint: {api_url}\n"
         "- HTTP Method: GET\n"
         "- Authentication Header: x-api-key\n"
@@ -45,8 +49,31 @@ def invitation_email_text(company, api_url, key):
         "The inventory is returned as a JSON snapshot with two separate arrays:\n"
         '- "natural": [ ... ] (Natural diamonds)\n'
         '- "lab_grown": [ ... ] (Lab grown diamonds)\n\n'
-        "Quick Test (cURL):\n"
+        "Quick Fetch Test (cURL):\n"
         f'curl -X GET "{api_url}" -H "x-api-key: {key}"\n\n'
+        "----------------------------------------\n"
+        "Step 2: Sync Feedback Webhook (POST)\n"
+        "----------------------------------------\n"
+        "After fetching and importing into your website / ERP, please report your import summary:\n"
+        f"- Endpoint: {feedback_url}\n"
+        "- HTTP Method: POST\n"
+        "- Authentication Header: x-api-key\n"
+        "- Content-Type: application/json\n\n"
+        "Feedback Payload Format:\n"
+        '{\n'
+        '  "success_count": 680,\n'
+        '  "failed_count": 7,\n'
+        '  "failures": [\n'
+        '    {"stock_id": "NAT-1002", "reason": "Missing cut grade"},\n'
+        '    {"stock_id": "LAB-405", "reason": "Invalid certificate URL"}\n'
+        '  ],\n'
+        '  "comment": "Imported to store"\n'
+        '}\n\n'
+        "Feedback cURL Example:\n"
+        f'curl -X POST "{feedback_url}" \\\n'
+        f'  -H "x-api-key: {key}" \\\n'
+        '  -H "Content-Type: application/json" \\\n'
+        '  -d \'{"success_count":680,"failed_count":7,"failures":[{"stock_id":"NAT-1002","reason":"Missing cut grade"}]}\'' "\n\n" 
         "Important Notes:\n"
         "- Prices already include your agreed company price adjustment.\n"
         "- Response headers include 'X-Inventory-Records' (total count) and 'X-Inventory-Published-At' (timestamp).\n"

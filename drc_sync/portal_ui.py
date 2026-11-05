@@ -1,9 +1,10 @@
 """Company and Feed management widgets; all network work stays on the serialized worker."""
 import json
 import re
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QTableWidget,
  QTableWidgetItem,QDialog,QFormLayout,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QDialogButtonBox,QHeaderView,QTabWidget,QFrame,QAbstractItemView)
+from .portal_client import PortalClient
 from .dialogs import dialog_layout,dialog_buttons
 from .portal_client import DEFAULT_BASE,clean_base
 from . import portal_secrets
@@ -43,6 +44,151 @@ def _make_pill(text):
     return lbl
 
 
+class FeedbackFetchThread(QThread):
+    finished = Signal(object, str)
+    def __init__(self, hosting_settings, client_id):
+        super().__init__()
+        self.settings = hosting_settings
+        self.client_id = client_id
+    def run(self):
+        try:
+            client = PortalClient(self.settings)
+            try:
+                res = client.status(self.client_id)
+                self.finished.emit(res, '')
+            finally:
+                client.close()
+        except Exception as exc:
+            self.finished.emit(None, str(exc))
+
+
+def show_feedback_dialog(w, company_id):
+    c = w.store.company(company_id)
+    if not c:
+        return
+    d = QDialog(w)
+    d.setWindowTitle(f"Import Feedback - {c['name']}")
+    d.resize(650, 480)
+    layout = QVBoxLayout(d)
+    layout.setSpacing(12)
+    layout.setContentsMargins(20, 20, 20, 20)
+
+    header = QLabel(f"<b>Sync Feedback for {c['name']}</b>")
+    header.setStyleSheet("font-size: 16px; color: #1c4d88;")
+    layout.addWidget(header)
+
+    status_lbl = QLabel("Fetching latest feedback from cloud...")
+    status_lbl.setStyleSheet("color: #64748b; font-size: 13px;")
+    layout.addWidget(status_lbl)
+
+    cards_frame = QWidget()
+    cards_row = QHBoxLayout(cards_frame)
+    cards_row.setContentsMargins(0, 0, 0, 0)
+    cards_row.setSpacing(10)
+
+    card_success = QLabel("<b>Success:</b> -")
+    card_success.setStyleSheet("background: #e6f4ea; color: #137333; padding: 10px; border-radius: 6px; font-size: 13px;")
+    card_failed = QLabel("<b>Failed:</b> -")
+    card_failed.setStyleSheet("background: #fdecea; color: #c5221f; padding: 10px; border-radius: 6px; font-size: 13px;")
+    card_total = QLabel("<b>Total:</b> -")
+    card_total.setStyleSheet("background: #f1f5f9; color: #334155; padding: 10px; border-radius: 6px; font-size: 13px;")
+
+    cards_row.addWidget(card_success)
+    cards_row.addWidget(card_failed)
+    cards_row.addWidget(card_total)
+    cards_frame.setVisible(False)
+    layout.addWidget(cards_frame)
+
+    info_lbl = QLabel()
+    info_lbl.setWordWrap(True)
+    info_lbl.setStyleSheet("color: #475569; font-size: 12px;")
+    info_lbl.setVisible(False)
+    layout.addWidget(info_lbl)
+
+    table = QTableWidget()
+    table.setColumnCount(2)
+    table.setHorizontalHeaderLabels(["Stock ID", "Failure / Rejection Reason"])
+    table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+    table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+    table.verticalHeader().setVisible(False)
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table.setStyleSheet("border: 1px solid #dce3eb; border-radius: 4px; background: white;")
+    table.setVisible(False)
+    layout.addWidget(table)
+
+    webhook_url = w.store.get('portal_hosting', {}).get('base_url', DEFAULT_BASE).rstrip('/') + '/api/v1/feedback'
+
+    btn_row = QHBoxLayout()
+    btn_copy = QPushButton("Copy Webhook cURL")
+    btn_copy.setFixedHeight(32)
+    btn_copy.setStyleSheet("background: white; border: 1px solid #c5d7ed; color: #1c4d88; padding: 0 12px; border-radius: 4px; font-weight: 600;")
+    
+    def copy_curl():
+        key = portal_secrets.company_key(c['id'], c['key_hash']) or 'YOUR_API_KEY'
+        curl_cmd = (
+            f'curl -X POST "{webhook_url}" \\\n'
+            f'  -H "x-api-key: {key}" \\\n'
+            '  -H "Content-Type: application/json" \\\n'
+            '  -d \'{"success_count": 680, "failed_count": 2, "failures": [{"stock_id": "NAT-1002", "reason": "Missing cut grade"}]}\''
+        )
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.clipboard().setText(curl_cmd)
+        btn_copy.setText("Copied!")
+    btn_copy.clicked.connect(copy_curl)
+    btn_row.addWidget(btn_copy)
+    btn_row.addStretch()
+
+    close_btn = QPushButton("Close")
+    close_btn.setFixedHeight(32)
+    close_btn.setStyleSheet("background: #2f6ae6; color: white; border: none; border-radius: 4px; padding: 0 16px; font-weight: 600;")
+    close_btn.clicked.connect(d.accept)
+    btn_row.addWidget(close_btn)
+    layout.addLayout(btn_row)
+
+    thread = FeedbackFetchThread(w.store.get('portal_hosting', {}), company_id)
+    def on_fetched(res, err):
+        if err:
+            status_lbl.setText(f"Could not load feedback: {err}")
+            status_lbl.setStyleSheet("color: #c5221f; font-size: 13px;")
+            return
+        fb = res.get('latest_feedback') if res else None
+        if not fb:
+            status_lbl.setText("No feedback reported yet by this client.\nDevelopers should POST import results to:\n" + webhook_url)
+            status_lbl.setStyleSheet("color: #64748b; font-size: 13px;")
+            return
+        status_lbl.setText(f"Last reported: {fb.get('recorded_at', 'Unknown')}")
+        status_lbl.setStyleSheet("color: #137333; font-size: 13px; font-weight: 600;")
+        card_success.setText(f"<b>Success:</b> {fb.get('success_count', 0)}")
+        card_failed.setText(f"<b>Failed:</b> {fb.get('failed_count', 0)}")
+        card_total.setText(f"<b>Total Reported:</b> {fb.get('total_reported', 0)}")
+        cards_frame.setVisible(True)
+
+        comment = fb.get('comment')
+        if comment:
+            info_lbl.setText(f"<b>Client Note:</b> {comment}")
+            info_lbl.setVisible(True)
+
+        failures = fb.get('failures') or []
+        if failures:
+            table.setRowCount(len(failures))
+            for idx, item in enumerate(failures):
+                s_item = QTableWidgetItem(str(item.get('stock_id', '')))
+                r_item = QTableWidgetItem(str(item.get('reason', '')))
+                table.setItem(idx, 0, s_item)
+                table.setItem(idx, 1, r_item)
+            table.setVisible(True)
+        else:
+            if fb.get('failed_count', 0) == 0:
+                info_lbl.setText((info_lbl.text() + "\n" if comment else "") + "All diamonds imported successfully with zero errors!")
+                info_lbl.setStyleSheet("color: #137333; font-size: 12px; font-weight: 600;")
+                info_lbl.setVisible(True)
+
+    thread.finished.connect(on_fetched)
+    thread.start()
+    d.finished.connect(thread.wait)
+    d.exec()
+
+
 def _row_actions(w, company_id):
     """Return a compact widget with Publish · Edit · Delete buttons for one row."""
     holder = QWidget()
@@ -56,6 +202,16 @@ def _row_actions(w, company_id):
         'font-size:12px;font-weight:600;padding:0 10px;'
         'background:#2f6ae6;color:white;border:none;border-radius:4px;'
     )
+
+    fb = QPushButton('📋 Feedback')
+    fb.setObjectName('quiet')
+    fb.setFixedHeight(30)
+    fb.setStyleSheet(
+        'font-size:12px;padding:0 8px;border-radius:4px;'
+        'background:white;color:#1c4d88;border:1px solid #c5d7ed;'
+    )
+    fb.setToolTip('View import feedback and failed diamond reasons from this client')
+    fb.clicked.connect(lambda: show_feedback_dialog(w, company_id))
 
     edit = QPushButton('✎ Edit')
     edit.setObjectName('quiet')
@@ -107,6 +263,7 @@ def _row_actions(w, company_id):
     delete.clicked.connect(do_delete)
 
     row.addWidget(pub)
+    row.addWidget(fb)
     row.addWidget(edit)
     row.addWidget(delete)
     row.addStretch()

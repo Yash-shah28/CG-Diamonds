@@ -47,3 +47,60 @@ test('two array split natural and lab_grown publication and response', async () 
   assert.deepEqual(body.natural, [nat]);
   assert.deepEqual(body.lab_grown, [lab]);
 });
+
+test('feedback webhook records import counts and failure reasons', async () => {
+  const storage = new Memory(), s = createService(storage, sha256(token));
+  const data = meta();
+  await publish(s, storage, data);
+
+  const fbPayload = {
+    success_count: 680,
+    failed_count: 2,
+    failures: [
+      { stock_id: 'NAT-1002', reason: 'Missing cut grade' },
+      { stock_id: 'LAB-405', reason: 'Invalid certificate URL' }
+    ],
+    snapshot_id: data.m.client_id + ':1',
+    comment: 'Shopify sync complete'
+  };
+
+  const response = await s.feedback(key1, fbPayload);
+  assert.equal(response.ok, true);
+  assert.equal(response.client_id, data.m.client_id);
+  assert.equal(response.summary.success_count, 680);
+  assert.equal(response.summary.failed_count, 2);
+  assert.equal(response.summary.total_reported, 682);
+  assert.match(response.recorded_at, /^\d{4}-\d{2}-\d{2}T/);
+
+  // Verify status returns the feedback
+  const status = await s.admin(header, { action: 'status', client_id: data.m.client_id });
+  assert.equal(status.ok, true);
+  assert.ok(status.latest_feedback);
+  assert.equal(status.latest_feedback.success_count, 680);
+  assert.equal(status.latest_feedback.failed_count, 2);
+  assert.equal(status.latest_feedback.failures.length, 2);
+  assert.equal(status.latest_feedback.failures[0].stock_id, 'NAT-1002');
+  assert.equal(status.latest_feedback.failures[0].reason, 'Missing cut grade');
+  assert.equal(status.latest_feedback.comment, 'Shopify sync complete');
+
+  // Verify feedback action returns the feedback
+  const directFb = await s.admin(header, { action: 'feedback', client_id: data.m.client_id });
+  assert.equal(directFb.ok, true);
+  assert.equal(directFb.latest_feedback.success_count, 680);
+
+  // Unauthorized key fails
+  await assert.rejects(() => s.feedback('cg_read_unknown_123456789012345678901234567890', fbPayload), { status: 401 });
+
+  // Invalid payload fails
+  await assert.rejects(() => s.feedback(key1, { success_count: -5 }), { status: 400 });
+  await assert.rejects(() => s.feedback(key1, null), { status: 400 });
+
+  // Flexible fields work
+  const flexibleResponse = await s.feedback(key1, {
+    imported: 100,
+    failed_items: [{ StockId: 'A-99', error: 'Duplicate SKU' }]
+  });
+  assert.equal(flexibleResponse.ok, true);
+  assert.equal(flexibleResponse.summary.success_count, 100);
+  assert.equal(flexibleResponse.summary.failed_count, 1);
+});

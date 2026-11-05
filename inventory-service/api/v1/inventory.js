@@ -1,10 +1,33 @@
 import {createService,ApiError} from '../../lib/inventory-service.js';
 import {blobStorage} from '../../lib/inventory-blob.js';
 export default async function handler(req,res){
- res.setHeader('Cache-Control','private, no-store');res.setHeader('X-Content-Type-Options','nosniff');
- if(req.method!=='GET'){res.setHeader('Allow','GET');return res.status(405).end();}
+ res.setHeader('Cache-Control','private, no-store');
+ res.setHeader('X-Content-Type-Options','nosniff');
+ res.setHeader('Access-Control-Allow-Origin','*');
+ res.setHeader('Access-Control-Allow-Methods','GET, POST, OPTIONS');
+ res.setHeader('Access-Control-Allow-Headers','Content-Type, x-api-key, Authorization');
+
+ if(req.method==='OPTIONS')return res.status(204).end();
+
+ const key=req.headers['x-api-key']||(req.headers.authorization?.startsWith('Bearer ')?req.headers.authorization.slice(7):null);
+
+ if(req.method==='POST'){
+  try{
+   if(Number(req.headers['content-length']||0)>524288)throw new ApiError(413,'Feedback payload is too large');
+   let body=req.body;
+   if(typeof body==='string'){try{body=JSON.parse(body);}catch{throw new ApiError(400,'Invalid JSON body');}}
+   const service=createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256);
+   const result=await service.feedback(key,body);
+   return res.status(200).json(result);
+  }catch(e){
+   const status=e instanceof ApiError?e.status:503;
+   return res.status(status).json({ok:false,error:e instanceof ApiError?e.message:'Inventory service temporarily unavailable'});
+  }
+ }
+
+ if(req.method!=='GET'){res.setHeader('Allow','GET, POST, OPTIONS');return res.status(405).end();}
  try{
-  const result=await createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256).inventory(req.headers['x-api-key']);
+  const result=await createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256).inventory(key);
   res.setHeader('Content-Type','application/json; charset=utf-8');
   res.setHeader('X-Inventory-Records',String(result.records));
   res.setHeader('X-Inventory-Snapshot',result.snapshot_id);

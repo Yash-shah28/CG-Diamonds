@@ -41,3 +41,37 @@ def test_history_full_error_details_and_new_events(prepared,monkeypatch):
     w.history_filter.setCurrentText('Published to API');assert w.history.rowCount()==1;cleanup(w,app)
 
 from test_portal import prepared
+
+def test_feedback_dialog_rendering(prepared, monkeypatch):
+    from drc_sync.portal_ui import show_feedback_dialog, FeedbackFetchThread
+    from drc_sync.portal_client import PortalClient
+    s, _ = prepared
+    cid = s.add_company('Website', 'dev@example.com', ['Natural'], secret_writer=lambda *a: None)
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(Worker, 'start', lambda self: None)
+    w = Window(s.db.execute('PRAGMA database_list').fetchone()[2])
+
+    fake_feedback = {
+        'ok': True,
+        'latest_feedback': {
+            'success_count': 680,
+            'failed_count': 2,
+            'total_reported': 682,
+            'comment': 'Test sync',
+            'failures': [{'stock_id': 'NAT-1', 'reason': 'Cut missing'}],
+            'recorded_at': '2026-11-05T00:00:00Z'
+        }
+    }
+    # Synchronously run the thread
+    class SyncThread:
+        def __init__(self, *a, **k):
+            self.finished = type('Signal', (), {'connect': lambda self, fn: setattr(self, 'fn', fn)})()
+        def start(self):
+            if hasattr(self.finished, 'fn'):
+                self.finished.fn(fake_feedback, '')
+        def wait(self):
+            pass
+    monkeypatch.setattr('drc_sync.portal_ui.FeedbackFetchThread', SyncThread)
+    monkeypatch.setattr(QDialog, 'exec', lambda self: None)
+    show_feedback_dialog(w, cid)
+    cleanup(w, app)
