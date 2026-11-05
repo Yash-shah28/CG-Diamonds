@@ -9,7 +9,7 @@ export function metadata(body){
  if(!body||!idOK(body.client_id)||!Number.isSafeInteger(body.revision)||body.revision<1)throw new ApiError(400,'Invalid company or revision');
  if(!hashOK(body.key_hash)||!hashOK(body.sha256)||!Number.isSafeInteger(body.size)||body.size<1||body.size>MAX_SNAPSHOT||!Number.isSafeInteger(body.records)||body.records<1)throw new ApiError(400,'Invalid feed metadata');
  if(!Array.isArray(body.kinds)||!body.kinds.length||new Set(body.kinds).size!==body.kinds.length||body.kinds.some(k=>!['Natural','Lab Grown'].includes(k)))throw new ApiError(400,'Invalid inventory scope');
- return {...body,kinds:[...body.kinds].sort()};
+ return {...body,kinds:[...body.kinds].sort(),company_name:typeof body.company_name==='string'?body.company_name.trim().slice(0,100):null};
 }
 const controlPath=id=>'inventory/control/'+id+'.json';
 const keyPath=hash=>'inventory/keys/'+hash+'.json';
@@ -39,9 +39,17 @@ export function createService(storage,adminHash){
     revision:c?.revision||0,
     key_hash:c?.key_hash||null,
     records:c?.records||0,
+    company_name:c?.company_name||null,
     latest_feedback:fb?.value||null,
     latest_access:acc?.value||null
    };
+  }
+  if(body.action==='name'){
+   if(typeof body.name!=='string'||!body.name.trim())throw new ApiError(400,'Company name is required');
+   if(!existing?.value)throw new ApiError(404,'Company not found');
+   const updated={...existing.value,company_name:body.name.trim().slice(0,100)};
+   await storage.putJson(controlPath(body.client_id),updated,existing.etag);
+   return {ok:true,client_id:body.client_id,company_name:updated.company_name};
   }
   if(body.action==='feedback'){
    const fb=await storage.json(feedbackPath(body.client_id)).catch(()=>null);
@@ -87,7 +95,7 @@ export function createService(storage,adminHash){
   const binding=await storage.json(keyPath(m.key_hash));
   if(binding&&binding.value.client_id!==m.client_id)throw new ApiError(409,'Key is already assigned');
   if(!binding)await storage.putJson(keyPath(m.key_hash),{client_id:m.client_id});
-  const updated={client_id:m.client_id,revision:m.revision,key_hash:m.key_hash,kinds:m.kinds,enabled:true,snapshot:path,sha256:m.sha256,size:m.size,records:m.records,published_at:new Date().toISOString(),operation:'publish'};
+  const updated={client_id:m.client_id,company_name:m.company_name||c?.company_name||null,revision:m.revision,key_hash:m.key_hash,kinds:m.kinds,enabled:true,snapshot:path,sha256:m.sha256,size:m.size,records:m.records,published_at:new Date().toISOString(),operation:'publish'};
   await storage.putJson(controlPath(m.client_id),updated,existing?.etag);
   return {ok:true,revision:m.revision,records:m.records};
  }
@@ -99,27 +107,44 @@ export function createService(storage,adminHash){
   if(!c?.enabled||!same(c.key_hash,hash))throw new ApiError(401,'Unauthorized');
   return {client_id:binding.value.client_id,control:c};
  }
+ async function recordAccess(client_id, meta){
+  if(!client_id||!meta)return;
+  const path=accessPath(client_id);
+  const existing=await storage.json(path).catch(()=>null);
+  const prevCount=existing?.value?.fetch_count||0;
+  const nat=Number(meta.naturalCount??meta.natural_count??0);
+  const lab=Number(meta.labGrownCount??meta.lab_grown_count??0);
+  const tot=Number(meta.totalCount??meta.total_count??(nat+lab));
+  const record={
+   client_id,
+   company_name:meta.company_name||existing?.value?.company_name||null,
+   fetch_count:prevCount+1,
+   last_ip:meta.ip||meta.last_ip||'unknown',
+   last_user_agent:meta.userAgent||meta.last_user_agent||'unknown',
+   last_fetched_at:new Date().toISOString(),
+   natural_count:nat,
+   lab_grown_count:lab,
+   total_count:tot
+  };
+  try{
+   await storage.putJson(path,record,existing?.etag);
+  }catch{
+   const fresh=await storage.json(path).catch(()=>null);
+   await storage.putJson(path,record,fresh?.etag);
+  }
+  return record;
+ }
  async function inventory(key,meta){
   const {client_id,control:c}=await resolveClient(key);
   if(!c.snapshot||c.snapshot!==snapshotPath(c))throw new ApiError(503,'No complete inventory is available');
   const stream=await storage.stream(c.snapshot);
   if(meta&&typeof meta==='object'){
-   const path=accessPath(client_id);
-   storage.json(path).then(existing=>{
-    const prevCount=existing?.value?.fetch_count||0;
-    return storage.putJson(path,{
-     client_id,
-     fetch_count:prevCount+1,
-     last_ip:meta.ip||'unknown',
-     last_user_agent:meta.userAgent||'unknown',
-     last_fetched_at:new Date().toISOString()
-    },existing?.etag);
-   }).catch(()=>{});
+   recordAccess(client_id,{company_name:c.company_name||null,...meta}).catch(()=>{});
   }
-  return {stream,records:c.records,client_id,snapshot_id:c.client_id+':'+c.revision,published_at:c.published_at};
+  return {stream,records:c.records,client_id,company_name:c.company_name||null,snapshot_id:c.client_id+':'+c.revision,published_at:c.published_at};
  }
  async function feedback(key,body){
-  const {client_id}=await resolveClient(key);
+  const {client_id,control:c}=await resolveClient(key);
   if(!body||typeof body!=='object'||Array.isArray(body))throw new ApiError(400,'Feedback body must be a JSON object');
 
   let successCount=body.success_count??body.imported??body.success??body.synced;
@@ -160,6 +185,7 @@ export function createService(storage,adminHash){
 
   const record={
    client_id,
+   company_name:c.company_name||null,
    success_count:successCount,
    failed_count:failedCount,
    total_reported:successCount+failedCount,
@@ -186,6 +212,7 @@ export function createService(storage,adminHash){
    ok:true,
    message:'Feedback recorded successfully',
    client_id,
+   company_name:c.company_name||null,
    summary:{
     success_count:successCount,
     failed_count:failedCount,
@@ -194,5 +221,5 @@ export function createService(storage,adminHash){
    recorded_at
   };
  }
- return {admin,inventory,feedback};
+ return {admin,inventory,feedback,recordAccess};
 }

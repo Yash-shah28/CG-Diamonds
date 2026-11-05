@@ -32,7 +32,8 @@ export default async function handler(req,res){
 
  if(req.method!=='GET'){res.setHeader('Allow','GET, POST, OPTIONS');return res.status(405).end();}
  try{
-  const result=await createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256).inventory(key,{ip:clientIp,userAgent});
+  const service=createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256);
+  const result=await service.inventory(key);
   const companyLabel=result.company_name?`"${result.company_name}" (${result.client_id})`:`ID: ${result.client_id}`;
   res.setHeader('Content-Type','application/json; charset=utf-8');
   res.setHeader('X-Inventory-Records',String(result.records));
@@ -61,13 +62,37 @@ export default async function handler(req,res){
    labGrownCount=lab_grown.length;
    data={natural,lab_grown};
    console.log(`[INVENTORY FETCH] Company: ${companyLabel} | IP: ${clientIp} | Tool: ${userAgent} | Natural: ${naturalCount} | Lab Grown: ${labGrownCount} | Total: ${naturalCount+labGrownCount}`);
+   service.recordAccess(result.client_id,{
+    ip:clientIp,
+    userAgent,
+    company_name:result.company_name,
+    naturalCount,
+    labGrownCount,
+    totalCount:naturalCount+labGrownCount
+   }).catch(()=>{});
    return res.status(200).send(JSON.stringify(data));
   }else if(data&&(Array.isArray(data.natural)||Array.isArray(data.lab_grown))){
    naturalCount=Array.isArray(data.natural)?data.natural.length:0;
    labGrownCount=Array.isArray(data.lab_grown)?data.lab_grown.length:0;
    console.log(`[INVENTORY FETCH] Company: ${companyLabel} | IP: ${clientIp} | Tool: ${userAgent} | Natural: ${naturalCount} | Lab Grown: ${labGrownCount} | Total: ${naturalCount+labGrownCount}`);
+   service.recordAccess(result.client_id,{
+    ip:clientIp,
+    userAgent,
+    company_name:result.company_name,
+    naturalCount,
+    labGrownCount,
+    totalCount:naturalCount+labGrownCount
+   }).catch(()=>{});
    return res.status(200).send(raw);
   }
+  service.recordAccess(result.client_id,{
+   ip:clientIp,
+   userAgent,
+   company_name:result.company_name,
+   naturalCount:0,
+   labGrownCount:0,
+   totalCount:result.records
+  }).catch(()=>{});
   console.log(`[INVENTORY FETCH] Company: ${companyLabel} | IP: ${clientIp} | Tool: ${userAgent} | Total: ${result.records}`);
   return res.status(200).send(raw);
  }catch(e){

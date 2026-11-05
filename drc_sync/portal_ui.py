@@ -11,12 +11,124 @@ from . import portal_secrets
 
 
 # ── column indices ──────────────────────────────────────────────
-_COL_NAME    = 0
-_COL_SCOPE   = 1
-_COL_EMAIL   = 2
-_COL_STATUS  = 3
-_COL_ACTIONS = 4
-_NUM_COLS    = 5
+_COL_NAME     = 0
+_COL_SCOPE    = 1
+_COL_EMAIL    = 2
+_COL_ACTIVITY = 3
+_COL_STATUS   = 4
+_COL_ACTIONS  = 5
+_NUM_COLS     = 6
+
+
+def format_access_summary(acc):
+    if not acc or not isinstance(acc, dict) or not acc.get('fetch_count'):
+        return None
+    ts = acc.get('last_fetched_at', '')
+    dt_str = ''
+    if ts:
+        try:
+            from datetime import datetime
+            clean_ts = ts.replace('Z', '+00:00')
+            dt = datetime.fromisoformat(clean_ts).astimezone()
+            now = datetime.now().astimezone()
+            if dt.date() == now.date():
+                time_part = dt.strftime('%I:%M %p').lstrip('0')
+                dt_str = f"Today at {time_part}"
+            elif (now.date() - dt.date()).days == 1:
+                time_part = dt.strftime('%I:%M %p').lstrip('0')
+                dt_str = f"Yesterday at {time_part}"
+            else:
+                dt_str = dt.strftime('%b %d, %I:%M %p').replace(' 0', ' ')
+        except Exception:
+            dt_str = ts[:16].replace('T', ' ')
+
+    count = acc.get('fetch_count', 0)
+    fetch_plural = 'fetch' if count == 1 else 'fetches'
+    header_text = f"Last: {dt_str} ({count} {fetch_plural})" if dt_str else f"{count} {fetch_plural}"
+
+    nat = acc.get('natural_count')
+    lab = acc.get('lab_grown_count')
+    tot = acc.get('total_count', 0)
+    if nat is not None or lab is not None:
+        nat_val = nat or 0
+        lab_val = lab or 0
+        diamonds_text = f"{nat_val} Natural, {lab_val} Lab Grown ({tot} Total)"
+    elif tot:
+        diamonds_text = f"{tot} Total Diamonds"
+    else:
+        diamonds_text = "Diamonds delivered"
+
+    return {
+        'header': header_text,
+        'diamonds': diamonds_text,
+        'ip': acc.get('last_ip', 'unknown'),
+        'agent': acc.get('last_user_agent', 'unknown'),
+        'count': count,
+        'dt_str': dt_str or 'Recent',
+        'nat': nat or 0,
+        'lab': lab or 0,
+        'tot': tot
+    }
+
+
+def _make_activity_cell(acc):
+    info = format_access_summary(acc)
+    widget = QWidget()
+    vbox = QVBoxLayout(widget)
+    vbox.setContentsMargins(6, 4, 6, 4)
+    vbox.setSpacing(2)
+
+    if not info:
+        lbl = QLabel("Not fetched yet")
+        lbl.setStyleSheet("color: #94a3b8; font-size: 12px; font-style: italic;")
+        vbox.addWidget(lbl)
+        vbox.addStretch()
+        return widget
+
+    lbl_top = QLabel(f"<b>{info['header']}</b>")
+    lbl_top.setStyleSheet("color: #1e293b; font-size: 12px;")
+    lbl_sub = QLabel(info['diamonds'])
+    lbl_sub.setStyleSheet("color: #2563eb; font-size: 11px; font-weight: 600;")
+
+    tooltip = (
+        f"Total Fetches: {info['count']}\n"
+        f"Last Fetched: {acc.get('last_fetched_at', '')}\n"
+        f"Delivered: {info['diamonds']}\n"
+        f"Client IP: {info['ip']}\n"
+        f"Client Tool: {info['agent']}"
+    )
+    widget.setToolTip(tooltip)
+    vbox.addWidget(lbl_top)
+    vbox.addWidget(lbl_sub)
+    vbox.addStretch()
+    return widget
+
+
+class ActivityFetchWorker(QThread):
+    access_updated = Signal(str, object)
+
+    def __init__(self, hosting_settings, client_ids):
+        super().__init__()
+        self.settings = hosting_settings
+        self.client_ids = client_ids
+
+    def run(self):
+        try:
+            client = PortalClient(self.settings)
+            try:
+                for cid in self.client_ids:
+                    if self.isInterruptionRequested():
+                        break
+                    try:
+                        res = client.status(cid)
+                        if res and isinstance(res, dict):
+                            self.access_updated.emit(cid, res.get('latest_access'))
+                    except Exception:
+                        pass
+            finally:
+                client.close()
+        except Exception:
+            pass
 
 
 def _feed_status_style(status):
@@ -67,18 +179,57 @@ def show_feedback_dialog(w, company_id):
     if not c:
         return
     d = QDialog(w)
-    d.setWindowTitle(f"Import Feedback - {c['name']}")
-    d.resize(650, 480)
+    d.setWindowTitle(f"API Activity & Feedback - {c['name']}")
+    d.resize(680, 560)
     layout = QVBoxLayout(d)
     layout.setSpacing(12)
     layout.setContentsMargins(20, 20, 20, 20)
 
-    header = QLabel(f"<b>Sync Feedback for {c['name']}</b>")
+    header = QLabel(f"<b>API Activity & Feedback for {c['name']}</b>")
     header.setStyleSheet("font-size: 16px; color: #1c4d88;")
     layout.addWidget(header)
 
+    # ── Section 1: Latest API Fetch Activity ───────────────────────
+    act_box = QFrame()
+    act_box.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px;")
+    act_layout = QVBoxLayout(act_box)
+    act_layout.setContentsMargins(8, 8, 8, 8)
+    act_layout.setSpacing(6)
+
+    act_title = QLabel("<b>📥 Latest API Fetch (Diamonds Downloaded by Client)</b>")
+    act_title.setStyleSheet("font-size: 13px; color: #0f172a; border: none;")
+    act_layout.addWidget(act_title)
+
+    act_status = QLabel("Checking latest fetch activity from cloud...")
+    act_status.setStyleSheet("color: #64748b; font-size: 12px; border: none;")
+    act_layout.addWidget(act_status)
+
+    act_counts_row = QHBoxLayout()
+    act_counts_row.setSpacing(8)
+    act_c_nat = QLabel("<b>Natural:</b> -")
+    act_c_nat.setStyleSheet("background: #eff6ff; color: #1d4ed8; padding: 6px 10px; border-radius: 4px; font-size: 12px; border: none;")
+    act_c_lab = QLabel("<b>Lab Grown:</b> -")
+    act_c_lab.setStyleSheet("background: #eff6ff; color: #1d4ed8; padding: 6px 10px; border-radius: 4px; font-size: 12px; border: none;")
+    act_c_tot = QLabel("<b>Total:</b> -")
+    act_c_tot.setStyleSheet("background: #f1f5f9; color: #334155; padding: 6px 10px; border-radius: 4px; font-size: 12px; border: none;")
+    act_counts_row.addWidget(act_c_nat)
+    act_counts_row.addWidget(act_c_lab)
+    act_counts_row.addWidget(act_c_tot)
+    act_counts_row.addStretch()
+    act_layout.addLayout(act_counts_row)
+
+    act_meta = QLabel()
+    act_meta.setStyleSheet("color: #64748b; font-size: 11px; border: none;")
+    act_layout.addWidget(act_meta)
+    layout.addWidget(act_box)
+
+    # ── Section 2: Client Import Feedback ──────────────────────────
+    fb_title = QLabel("<b>📋 Client Import Feedback (Reported by Client Website)</b>")
+    fb_title.setStyleSheet("font-size: 13px; color: #0f172a; margin-top: 4px;")
+    layout.addWidget(fb_title)
+
     status_lbl = QLabel("Fetching latest feedback from cloud...")
-    status_lbl.setStyleSheet("color: #64748b; font-size: 13px;")
+    status_lbl.setStyleSheet("color: #64748b; font-size: 12px;")
     layout.addWidget(status_lbl)
 
     cards_frame = QWidget()
@@ -87,11 +238,11 @@ def show_feedback_dialog(w, company_id):
     cards_row.setSpacing(10)
 
     card_success = QLabel("<b>Success:</b> -")
-    card_success.setStyleSheet("background: #e6f4ea; color: #137333; padding: 10px; border-radius: 6px; font-size: 13px;")
+    card_success.setStyleSheet("background: #e6f4ea; color: #137333; padding: 8px 10px; border-radius: 6px; font-size: 12px;")
     card_failed = QLabel("<b>Failed:</b> -")
-    card_failed.setStyleSheet("background: #fdecea; color: #c5221f; padding: 10px; border-radius: 6px; font-size: 13px;")
+    card_failed.setStyleSheet("background: #fdecea; color: #c5221f; padding: 8px 10px; border-radius: 6px; font-size: 12px;")
     card_total = QLabel("<b>Total:</b> -")
-    card_total.setStyleSheet("background: #f1f5f9; color: #334155; padding: 10px; border-radius: 6px; font-size: 13px;")
+    card_total.setStyleSheet("background: #f1f5f9; color: #334155; padding: 8px 10px; border-radius: 6px; font-size: 12px;")
 
     cards_row.addWidget(card_success)
     cards_row.addWidget(card_failed)
@@ -148,16 +299,42 @@ def show_feedback_dialog(w, company_id):
     thread = FeedbackFetchThread(w.store.get('portal_hosting', {}), company_id)
     def on_fetched(res, err):
         if err:
-            status_lbl.setText(f"Could not load feedback: {err}")
+            status_lbl.setText(f"Could not load data from cloud: {err}")
             status_lbl.setStyleSheet("color: #c5221f; font-size: 13px;")
+            act_status.setText("Could not load fetch activity.")
             return
+
+        # ── Populate Activity Box ──────────────────────────────
+        acc = res.get('latest_access') if res else None
+        if acc and acc.get('fetch_count'):
+            if not hasattr(w, '_access_cache'): w._access_cache = {}
+            w._access_cache[company_id] = acc
+            if hasattr(w, 'client_ids') and company_id in w.client_ids:
+                row_idx = w.client_ids.index(company_id)
+                w.clients_table.setCellWidget(row_idx, _COL_ACTIVITY, _make_activity_cell(acc))
+            info = format_access_summary(acc)
+            act_status.setText(f"<b>Last Fetched:</b> {info['header']}")
+            act_status.setStyleSheet("color: #15803d; font-size: 12px; border: none;")
+            act_c_nat.setText(f"<b>Natural:</b> {info['nat']}")
+            act_c_lab.setText(f"<b>Lab Grown:</b> {info['lab']}")
+            act_c_tot.setText(f"<b>Total Fetched:</b> {info['tot']}")
+            act_meta.setText(f"<b>Client IP:</b> {info['ip']} &nbsp;|&nbsp; <b>Tool:</b> {info['agent']}")
+        else:
+            act_status.setText("No API fetches recorded yet for this company key.")
+            act_status.setStyleSheet("color: #94a3b8; font-size: 12px; font-style: italic; border: none;")
+            act_c_nat.setText("<b>Natural:</b> 0")
+            act_c_lab.setText("<b>Lab Grown:</b> 0")
+            act_c_tot.setText("<b>Total:</b> 0")
+            act_meta.setText("")
+
+        # ── Populate Feedback Section ──────────────────────────
         fb = res.get('latest_feedback') if res else None
         if not fb:
             status_lbl.setText("No feedback reported yet by this client.\nDevelopers should POST import results to:\n" + webhook_url)
-            status_lbl.setStyleSheet("color: #64748b; font-size: 13px;")
+            status_lbl.setStyleSheet("color: #64748b; font-size: 12px;")
             return
         status_lbl.setText(f"Last reported: {fb.get('recorded_at', 'Unknown')}")
-        status_lbl.setStyleSheet("color: #137333; font-size: 13px; font-weight: 600;")
+        status_lbl.setStyleSheet("color: #137333; font-size: 12px; font-weight: 600;")
         card_success.setText(f"<b>Success:</b> {fb.get('success_count', 0)}")
         card_failed.setText(f"<b>Failed:</b> {fb.get('failed_count', 0)}")
         card_total.setText(f"<b>Total Reported:</b> {fb.get('total_reported', 0)}")
@@ -311,7 +488,7 @@ def api_page(w):
     # ── table ──────────────────────────────────────────────────
     w.clients_table = QTableWidget(0, _NUM_COLS)
     w.clients_table.setHorizontalHeaderLabels(
-        ['Feed Name', 'Scope', 'Recipient Email', 'Status', 'Actions']
+        ['Feed Name', 'Scope', 'Recipient Email', 'Latest Client Fetch', 'Status', 'Actions']
     )
     w.clients_table.setShowGrid(False)
     w.clients_table.setAlternatingRowColors(True)
@@ -332,10 +509,11 @@ def api_page(w):
     hdr = w.clients_table.horizontalHeader()
     hdr.setSectionResizeMode(QHeaderView.Interactive)
     hdr.setMinimumHeight(40)
-    w.clients_table.setColumnWidth(_COL_NAME,   180)
-    w.clients_table.setColumnWidth(_COL_SCOPE,  120)
-    w.clients_table.setColumnWidth(_COL_EMAIL,  210)
-    w.clients_table.setColumnWidth(_COL_STATUS, 110)
+    w.clients_table.setColumnWidth(_COL_NAME,     160)
+    w.clients_table.setColumnWidth(_COL_SCOPE,    105)
+    w.clients_table.setColumnWidth(_COL_EMAIL,    180)
+    w.clients_table.setColumnWidth(_COL_ACTIVITY, 250)
+    w.clients_table.setColumnWidth(_COL_STATUS,   100)
     hdr.setSectionResizeMode(_COL_ACTIONS, QHeaderView.Stretch)
 
     layout.addWidget(w.clients_table, 1)
@@ -574,12 +752,40 @@ def hosting_settings(w):
     buttons=QDialogButtonBox(QDialogButtonBox.Close);buttons.rejected.connect(d.reject);layout.addWidget(buttons)
     d.exec()
 
+def start_activity_refresh(w):
+    if not hasattr(w, '_access_cache'):
+        w._access_cache = {}
+    old_worker = getattr(w, '_activity_worker', None)
+    if old_worker and old_worker.isRunning():
+        old_worker.requestInterruption()
+        old_worker.wait(200)
+
+    hosting = w.store.get('portal_hosting', {})
+    if not hosting or not hosting.get('base_url'):
+        return
+    cids = getattr(w, 'client_ids', [])
+    if not cids:
+        return
+
+    worker = ActivityFetchWorker(hosting, cids)
+    def on_access_updated(cid, acc):
+        w._access_cache[cid] = acc
+        if hasattr(w, 'client_ids') and cid in w.client_ids:
+            row_idx = w.client_ids.index(cid)
+            w.clients_table.setCellWidget(row_idx, _COL_ACTIVITY, _make_activity_cell(acc))
+    worker.access_updated.connect(on_access_updated)
+    w._activity_worker = worker
+    worker.start()
+
+
 def refresh_companies(w):
     old_ids=getattr(w,'client_ids',[]);row=w.clients_table.currentRow()
     selected=old_ids[row] if 0<=row<len(old_ids) else None
     companies=w.store.companies();w.client_ids=[c['id'] for c in companies]
     w.clients_table.setRowCount(len(companies))
-    ROW_H = 46
+    if not hasattr(w, '_access_cache'):
+        w._access_cache = {}
+    ROW_H = 50
     for i,c in enumerate(companies):
         w.clients_table.setRowHeight(i, ROW_H)
         # Feed Name
@@ -592,6 +798,9 @@ def refresh_companies(w):
         # Email
         item3=QTableWidgetItem(c['email']);item3.setToolTip(c['email'])
         w.clients_table.setItem(i,_COL_EMAIL,item3)
+        # Latest Client Fetch Activity
+        acc = w._access_cache.get(c['id'])
+        w.clients_table.setCellWidget(i, _COL_ACTIVITY, _make_activity_cell(acc))
         # Status pill (widget)
         pill_holder=QWidget();ph=QHBoxLayout(pill_holder);ph.setContentsMargins(6,6,6,6)
         ph.addWidget(_make_pill(c['status'] or 'Draft'));ph.addStretch()
@@ -600,3 +809,4 @@ def refresh_companies(w):
         w.clients_table.setCellWidget(i,_COL_ACTIONS,_row_actions(w,c['id']))
     if selected in w.client_ids:w.clients_table.selectRow(w.client_ids.index(selected))
     elif companies:w.clients_table.selectRow(0)
+    start_activity_refresh(w)

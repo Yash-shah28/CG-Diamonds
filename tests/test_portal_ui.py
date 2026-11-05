@@ -5,6 +5,9 @@ from drc_sync.app import Window,Worker
 from drc_sync.portal_store import PortalStore
 
 def cleanup(w,app):
+    worker=getattr(w,'_activity_worker',None)
+    if worker:
+        worker.requestInterruption();worker.wait(500)
     w.tray.hide();w.timer.stop();w.store.db.close();w.deleteLater();app.processEvents()
 
 def test_five_pages_sidebar_and_persistence(tmp_path,monkeypatch):
@@ -60,6 +63,15 @@ def test_feedback_dialog_rendering(prepared, monkeypatch):
             'comment': 'Test sync',
             'failures': [{'stock_id': 'NAT-1', 'reason': 'Cut missing'}],
             'recorded_at': '2026-11-05T00:00:00Z'
+        },
+        'latest_access': {
+            'fetch_count': 10,
+            'last_fetched_at': '2026-11-05T13:45:00.000Z',
+            'natural_count': 276,
+            'lab_grown_count': 0,
+            'total_count': 276,
+            'last_ip': '103.50.153.226',
+            'last_user_agent': 'curl/8.12.0'
         }
     }
     # Synchronously run the thread
@@ -75,3 +87,31 @@ def test_feedback_dialog_rendering(prepared, monkeypatch):
     monkeypatch.setattr(QDialog, 'exec', lambda self: None)
     show_feedback_dialog(w, cid)
     cleanup(w, app)
+
+
+def test_activity_summary_and_cell(prepared):
+    from drc_sync.portal_ui import format_access_summary, _make_activity_cell
+    # None or empty
+    assert format_access_summary(None) is None
+    assert format_access_summary({}) is None
+    assert format_access_summary({'fetch_count': 0}) is None
+
+    # Full data with counts
+    acc = {
+        'fetch_count': 10,
+        'last_fetched_at': '2026-11-05T13:45:00.000Z',
+        'natural_count': 276,
+        'lab_grown_count': 15,
+        'total_count': 291,
+        'last_ip': '103.50.153.226',
+        'last_user_agent': 'curl/8.12.0'
+    }
+    info = format_access_summary(acc)
+    assert info is not None
+    assert '10 fetches' in info['header']
+    assert '276 Natural, 15 Lab Grown (291 Total)' in info['diamonds']
+    assert info['ip'] == '103.50.153.226'
+
+    cell = _make_activity_cell(acc)
+    assert cell is not None
+    assert '276 Natural' in cell.toolTip()

@@ -74,10 +74,6 @@ def invitation_email_text(company, api_url, key):
         f'  -H "x-api-key: {key}" \\\n'
         '  -H "Content-Type: application/json" \\\n'
         '  -d \'{"success_count":680,"failed_count":7,"failures":[{"stock_id":"NAT-1002","reason":"Missing cut grade"}]}\'' "\n\n" 
-        "Important Notes:\n"
-        "- Prices already include your agreed company price adjustment.\n"
-        "- Response headers include 'X-Inventory-Records' (total count) and 'X-Inventory-Published-At' (timestamp).\n"
-        "- Please keep your API key secure and confidential.\n\n"
         "The complete integration guide is attached as a PDF.\n\n"
         "Chintamani Gems"
     )
