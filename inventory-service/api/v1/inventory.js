@@ -10,6 +10,8 @@ export default async function handler(req,res){
  if(req.method==='OPTIONS')return res.status(204).end();
 
  const key=req.headers['x-api-key']||(req.headers.authorization?.startsWith('Bearer ')?req.headers.authorization.slice(7):null);
+ const clientIp=req.headers['x-forwarded-for']?.split(',')[0].trim()||req.headers['x-real-ip']||req.socket?.remoteAddress||'unknown';
+ const userAgent=req.headers['user-agent']||'unknown';
 
  if(req.method==='POST'){
   try{
@@ -18,8 +20,10 @@ export default async function handler(req,res){
    if(typeof body==='string'){try{body=JSON.parse(body);}catch{throw new ApiError(400,'Invalid JSON body');}}
    const service=createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256);
    const result=await service.feedback(key,body);
+   console.log(`[API FEEDBACK] Company ID: ${result.client_id} | IP: ${clientIp} | Succeeded: ${result.summary.success_count} | Failed: ${result.summary.failed_count} | Tool: ${userAgent}`);
    return res.status(200).json(result);
   }catch(e){
+   console.warn(`[API FEEDBACK ERROR] IP: ${clientIp} | Tool: ${userAgent} | Error: ${e.message}`);
    const status=e instanceof ApiError?e.status:503;
    return res.status(status).json({ok:false,error:e instanceof ApiError?e.message:'Inventory service temporarily unavailable'});
   }
@@ -27,7 +31,8 @@ export default async function handler(req,res){
 
  if(req.method!=='GET'){res.setHeader('Allow','GET, POST, OPTIONS');return res.status(405).end();}
  try{
-  const result=await createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256).inventory(key);
+  const result=await createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256).inventory(key,{ip:clientIp,userAgent});
+  console.log(`[INVENTORY FETCH] Company ID: ${result.client_id} | IP: ${clientIp} | Tool: ${userAgent} | Diamonds: ${result.records}`);
   res.setHeader('Content-Type','application/json; charset=utf-8');
   res.setHeader('X-Inventory-Records',String(result.records));
   res.setHeader('X-Inventory-Snapshot',result.snapshot_id);
@@ -53,5 +58,10 @@ export default async function handler(req,res){
    return res.status(200).send(JSON.stringify(data));
   }
   return res.status(200).send(raw);
- }catch(e){if(res.headersSent)return res.destroy();const status=e instanceof ApiError?e.status:503;return res.status(status).json({ok:false,error:e instanceof ApiError?e.message:'Inventory is temporarily unavailable'});}
+ }catch(e){
+  console.warn(`[INVENTORY FETCH FAILED] IP: ${clientIp} | Tool: ${userAgent} | Error: ${e.message}`);
+  if(res.headersSent)return res.destroy();
+  const status=e instanceof ApiError?e.status:503;
+  return res.status(status).json({ok:false,error:e instanceof ApiError?e.message:'Inventory is temporarily unavailable'});
+ }
 }

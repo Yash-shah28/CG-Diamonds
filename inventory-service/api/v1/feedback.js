@@ -17,6 +17,9 @@ export default async function handler(req,res){
   return res.status(405).json({ok:false,error:'Method not allowed. Use POST to submit feedback.'});
  }
 
+ const clientIp=req.headers['x-forwarded-for']?.split(',')[0].trim()||req.headers['x-real-ip']||req.socket?.remoteAddress||'unknown';
+ const userAgent=req.headers['user-agent']||'unknown';
+
  try{
   if(Number(req.headers['content-length']||0)>524288){
    throw new ApiError(413,'Feedback payload is too large (max 512 KB)');
@@ -31,8 +34,10 @@ export default async function handler(req,res){
 
   const service=createService(blobStorage(),process.env.INVENTORY_ADMIN_TOKEN_SHA256);
   const result=await service.feedback(key,body);
+  console.log(`[API FEEDBACK] Company ID: ${result.client_id} | IP: ${clientIp} | Succeeded: ${result.summary.success_count} | Failed: ${result.summary.failed_count} | Tool: ${userAgent}`);
   return res.status(200).json(result);
  }catch(e){
+  console.warn(`[API FEEDBACK FAILED] IP: ${clientIp} | Tool: ${userAgent} | Error: ${e.message}`);
   const status=e instanceof ApiError?e.status:503;
   return res.status(status).json({ok:false,error:e instanceof ApiError?e.message:'Inventory feedback is temporarily unavailable'});
  }

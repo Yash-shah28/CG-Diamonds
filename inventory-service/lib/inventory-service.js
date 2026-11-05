@@ -16,6 +16,7 @@ const keyPath=hash=>'inventory/keys/'+hash+'.json';
 export const snapshotPath=m=>`inventory/snapshots/${m.client_id}/${m.revision}/${m.sha256}.json`;
 export const feedbackPath=id=>`inventory/feedback/${id}/latest.json`;
 export const feedbackHistoryPath=(id,ts)=>`inventory/feedback/${id}/history/${ts}.json`;
+export const accessPath=id=>`inventory/access/${id}/latest.json`;
 
 function equivalent(c,m){return c?.enabled&&c.revision===m.revision&&same(c.key_hash,m.key_hash)&&c.sha256===m.sha256&&JSON.stringify(c.kinds)===JSON.stringify(m.kinds);}
 function assertNew(c,revision){if(c&&revision<=c.revision)throw new ApiError(409,'A newer or conflicting revision is already active');}
@@ -31,7 +32,16 @@ export function createService(storage,adminHash){
   const existing=await storage.json(controlPath(body.client_id));const c=existing?.value;
   if(body.action==='status'){
    const fb=await storage.json(feedbackPath(body.client_id)).catch(()=>null);
-   return {ok:true,enabled:Boolean(c?.enabled),revision:c?.revision||0,key_hash:c?.key_hash||null,records:c?.records||0,latest_feedback:fb?.value||null};
+   const acc=await storage.json(accessPath(body.client_id)).catch(()=>null);
+   return {
+    ok:true,
+    enabled:Boolean(c?.enabled),
+    revision:c?.revision||0,
+    key_hash:c?.key_hash||null,
+    records:c?.records||0,
+    latest_feedback:fb?.value||null,
+    latest_access:acc?.value||null
+   };
   }
   if(body.action==='feedback'){
    const fb=await storage.json(feedbackPath(body.client_id)).catch(()=>null);
@@ -89,11 +99,24 @@ export function createService(storage,adminHash){
   if(!c?.enabled||!same(c.key_hash,hash))throw new ApiError(401,'Unauthorized');
   return {client_id:binding.value.client_id,control:c};
  }
- async function inventory(key){
-  const {control:c}=await resolveClient(key);
+ async function inventory(key,meta){
+  const {client_id,control:c}=await resolveClient(key);
   if(!c.snapshot||c.snapshot!==snapshotPath(c))throw new ApiError(503,'No complete inventory is available');
   const stream=await storage.stream(c.snapshot);
-  return {stream,records:c.records,snapshot_id:c.client_id+':'+c.revision,published_at:c.published_at};
+  if(meta&&typeof meta==='object'){
+   const path=accessPath(client_id);
+   storage.json(path).then(existing=>{
+    const prevCount=existing?.value?.fetch_count||0;
+    return storage.putJson(path,{
+     client_id,
+     fetch_count:prevCount+1,
+     last_ip:meta.ip||'unknown',
+     last_user_agent:meta.userAgent||'unknown',
+     last_fetched_at:new Date().toISOString()
+    },existing?.etag);
+   }).catch(()=>{});
+  }
+  return {stream,records:c.records,client_id,snapshot_id:c.client_id+':'+c.revision,published_at:c.published_at};
  }
  async function feedback(key,body){
   const {client_id}=await resolveClient(key);
