@@ -265,11 +265,14 @@ class Window(QMainWindow):
             if latest_fetch and latest_fetch.get('fetch_count'):
                 cname=latest_fetch.get('company_name') or comp_by_id.get(latest_fetch.get('client_id'),{}).get('name') or 'Client'
                 f_info=format_access_summary(latest_fetch)
-                self.dashboard_fetch_info.setText(
-                    f"<b>Company:</b> {cname} &nbsp;•&nbsp; <b>{f_info['header']}</b><br>"
-                    f"<span style='color: #2563eb; font-weight: 600;'>{f_info['diamonds']}</span> &nbsp;•&nbsp; "
-                    f"<span style='color: #64748b;'>IP: {f_info['ip']} ({f_info['agent']})</span>"
-                )
+                if f_info:
+                    self.dashboard_fetch_info.setText(
+                        f"<b>Company:</b> {cname} &nbsp;•&nbsp; <b>{f_info['header']}</b><br>"
+                        f"<span style='color: #2563eb; font-weight: 600;'>{f_info['diamonds']}</span> &nbsp;•&nbsp; "
+                        f"<span style='color: #64748b;'>IP: {f_info['ip']} ({f_info['agent']})</span>"
+                    )
+                else:
+                    self.dashboard_fetch_info.setText("No client API fetches recorded yet.")
             else:
                 self.dashboard_fetch_info.setText("No client API fetches recorded yet.")
 
@@ -465,7 +468,11 @@ class Window(QMainWindow):
         else: self.exit(); event.accept()
     def exit(self):
         if hasattr(self, 'updater'): self.updater.stop()
-        self.worker.requestInterruption(); self.worker.wait(); self.tray.hide(); QApplication.quit()
+        act_w = getattr(self, '_activity_worker', None)
+        if act_w and act_w.isRunning():
+            act_w.requestInterruption()
+            act_w.wait(2000)
+        self.worker.requestInterruption(); self.worker.wait(2000); self.tray.hide(); QApplication.quit()
 
 def main():
     if '--provision-credentials' in sys.argv or '--credential-self-test' in sys.argv:
@@ -532,6 +539,13 @@ def main():
     try:
         app.exec()
     finally:
+        if hasattr(window, 'worker') and window.worker.isRunning():
+            window.worker.requestInterruption()
+            window.worker.wait(2000)
+        act_w = getattr(window, '_activity_worker', None)
+        if act_w and act_w.isRunning():
+            act_w.requestInterruption()
+            act_w.wait(2000)
         instance.close()
         if mutex: ctypes.windll.kernel32.CloseHandle(mutex)
 
