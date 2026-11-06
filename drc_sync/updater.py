@@ -161,4 +161,4 @@ def launch_installer(installer, release):
 
 
 def update_client():
-    return httpx.Client(timeout=httpx.Timeout(60, connect=15), follow_redirects=False)
+    return httpx.Client(timeout=httpx.Timeout(60, connect=15), follow_redirects=True)
