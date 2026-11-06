@@ -31,14 +31,24 @@ def version_tuple(value):
     return tuple(map(int, value.split('.')))
 
 
+def is_trusted_host(host):
+    return (
+        host.endswith('.public.blob.vercel-storage.com')
+        or host == 'github.com'
+        or host.endswith('.github.com')
+        or host.endswith('.githubusercontent.com')
+        or host.endswith('.supabase.co')
+    )
+
+
 def trusted_url(url):
     if not isinstance(url, str):
         raise UpdateError('Invalid download address')
     parsed = urlsplit(url)
     host = parsed.hostname or ''
     if (parsed.scheme != 'https' or parsed.username or parsed.password or parsed.port not in (None, 443)
-            or not host.endswith('.public.blob.vercel-storage.com') or parsed.fragment):
-        raise UpdateError('Release must use public Vercel Blob HTTPS storage')
+            or not is_trusted_host(host) or parsed.fragment):
+        raise UpdateError('Release must use trusted public storage')
     return url
 
 
