@@ -197,19 +197,82 @@ class Window(QMainWindow):
         hosting_settings(self)
     def refresh(self):
         from .dashboard import history_entries
-        from .portal_ui import refresh_companies
+        from .portal_ui import refresh_companies, format_access_summary
         profiles=self.store.get('profiles',[])
+        companies=self.store.companies()
+        comp_by_id={c['id']:c for c in companies}
+
         rows=self.store.db.execute("SELECT j.*,r.body AS response_body,r.status AS response_status,r.filename AS response_filename,r.kind AS response_kind FROM jobs j LEFT JOIN responses r ON r.id=(SELECT MAX(id) FROM responses WHERE job_id=j.id) ORDER BY j.id DESC").fetchall()
         entries=history_entries(rows,profiles)
-        for e in entries:e['kind']='Legacy '+e['kind']
+        for e in entries:
+            e['diamond_type']='Legacy '+e['kind']
+            e['op_type']='Legacy Publish'
         for error in self.store.db.execute('SELECT * FROM errors ORDER BY id DESC LIMIT 100'):
             p=next((p for p in profiles if p['id']==error['profile']),{})
-            entries.append(dict(id=None,created=error['created'],kind=p.get('kind',error['profile']),filename=Path(p.get('path','')).name,records='-',result='Failure',detail=error['detail']))
+            entries.append(dict(id=None,created=error['created'],diamond_type=p.get('kind',error['profile']),op_type='Validation Error',records=0,result='Failure',detail=error['detail']))
         for e in self.store.db.execute('SELECT * FROM portal_history ORDER BY id DESC LIMIT 300'):
-            entries.append(dict(id=-e['id'],created=e['created'],kind=e['name'],filename=e['event'],records=e['records'],result=e['state'],detail=e['detail']))
+            c=comp_by_id.get(e['client_id'])
+            if c and c.get('kinds'):
+                try:kinds_list=json.loads(c['kinds']);d_type=', '.join(kinds_list)
+                except Exception:d_type='All'
+            else:d_type='All'
+            event=e['event'];cname=e['name']
+            if 'fetch' in event.lower():op_type=f"Fetch by {cname}"
+            elif event.lower() in ('publish','email'):op_type=f"{event.title()} ({cname})"
+            else:op_type=f"{event} ({cname})"
+            entries.append(dict(id=-e['id'],created=e['created'],diamond_type=d_type,op_type=op_type,records=e['records'],result=e['state'],detail=e['detail']))
+
+        cache=getattr(self,'_access_cache',{})
+        for cid,acc in cache.items():
+            if acc and isinstance(acc,dict) and acc.get('fetch_count') and acc.get('last_fetched_at'):
+                from datetime import datetime
+                try:ts=acc['last_fetched_at'].replace('Z','+00:00');created_sec=datetime.fromisoformat(ts).timestamp()
+                except Exception:created_sec=time.time()
+                cname=acc.get('company_name') or comp_by_id.get(cid,{}).get('name') or 'Client'
+                nat=acc.get('natural_count',0);lab=acc.get('lab_grown_count',0);tot=acc.get('total_count',nat+lab)
+                if nat and lab:d_type='Natural & Lab Grown'
+                elif nat:d_type='Natural'
+                elif lab:d_type='Lab Grown'
+                else:d_type='All'
+                entries.append(dict(id=None,created=created_sec,diamond_type=d_type,op_type=f"Fetch by {cname}",records=tot,result='Success',detail=f"API download from IP {acc.get('last_ip')} using {acc.get('last_user_agent')}. Delivered: {nat} Natural, {lab} Lab Grown."))
+
         entries.sort(key=lambda e:e['created'],reverse=True)
-        for key,label in [('Sent to DRC','Published to API'),('Needs review','Needs review'),('Failure','Failure')]:self.metric_values[key].setText(str(sum(e['result']==label for e in entries)))
-        self.metric_values['Connected files'].setText(str(len(profiles)))
+
+        nat_row=self.store.db.execute("SELECT payload FROM portal_cache WHERE kind='Natural'").fetchone()
+        nat_count=0
+        if nat_row:
+            try:nat_count=len(json.loads(nat_row['payload']).get('diamonds',[]))
+            except Exception:pass
+        lab_row=self.store.db.execute("SELECT payload FROM portal_cache WHERE kind='Lab Grown'").fetchone()
+        lab_count=0
+        if lab_row:
+            try:lab_count=len(json.loads(lab_row['payload']).get('diamonds',[]))
+            except Exception:pass
+
+        if 'Natural diamonds' in self.metric_values:self.metric_values['Natural diamonds'].setText(f"{nat_count:,}" if nat_count else "0")
+        if 'Lab Grown diamonds' in self.metric_values:self.metric_values['Lab Grown diamonds'].setText(f"{lab_count:,}" if lab_count else "0")
+        if 'Sent to DRC' in self.metric_values:self.metric_values['Sent to DRC'].setText(str(sum(e['result']=='Published to API' for e in entries)))
+        if 'Needs review' in self.metric_values:self.metric_values['Needs review'].setText(str(sum(e['result']=='Needs review' for e in entries)))
+        if 'Connected files' in self.metric_values:self.metric_values['Connected files'].setText(str(len(profiles)))
+        if 'Failure' in self.metric_values:self.metric_values['Failure'].setText(str(sum(e['result']=='Failure' for e in entries)))
+
+        latest_fetch=None;latest_ts=""
+        for cid,acc in cache.items():
+            if acc and isinstance(acc,dict) and acc.get('last_fetched_at'):
+                if acc['last_fetched_at']>latest_ts:latest_ts=acc['last_fetched_at'];latest_fetch=acc
+
+        if hasattr(self,'dashboard_fetch_info'):
+            if latest_fetch and latest_fetch.get('fetch_count'):
+                cname=latest_fetch.get('company_name') or comp_by_id.get(latest_fetch.get('client_id'),{}).get('name') or 'Client'
+                f_info=format_access_summary(latest_fetch)
+                self.dashboard_fetch_info.setText(
+                    f"<b>Company:</b> {cname} &nbsp;•&nbsp; <b>{f_info['header']}</b><br>"
+                    f"<span style='color: #2563eb; font-weight: 600;'>{f_info['diamonds']}</span> &nbsp;•&nbsp; "
+                    f"<span style='color: #64748b;'>IP: {f_info['ip']} ({f_info['agent']})</span>"
+                )
+            else:
+                self.dashboard_fetch_info.setText("No client API fetches recorded yet.")
+
         def last(label):
             e=next((e for e in entries if e['result']==label),None)
             return time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(e['created'])) if e else 'None'
@@ -219,10 +282,17 @@ class Window(QMainWindow):
         selected=self.history_filter.currentText();visible=[e for e in entries if selected=='All results' or e['result']==selected][:300]
         self.history.setRowCount(len(visible));self.history_ids=[e['id'] for e in visible];self.history_details=[e['detail'] for e in visible]
         for row,e in enumerate(visible):
-            values=[time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(e['created'])),e['kind'],e['filename'],str(e['records']),e['result'],e['detail']]
+            d_time=time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(e['created']))
+            d_type=e.get('diamond_type','All')
+            status=e['result']
+            results=f"{e['records']} diamonds" if (isinstance(e['records'],int) and e['records']>0) else str(e['records'])
+            op_type=e.get('op_type','Operation')
+            detail=e['detail']
+
+            values=[d_time,d_type,status,results,op_type,detail]
             for column,value in enumerate(values):
-                item=QTableWidgetItem('' if column==4 else value);item.setToolTip(value)
-                if column==4:item.setData(Qt.UserRole,value);self.history.setCellWidget(row,column,status_badge(value))
+                item=QTableWidgetItem('' if column==2 else value);item.setToolTip(value)
+                if column==2:item.setData(Qt.UserRole,value);self.history.setCellWidget(row,column,status_badge(value))
                 self.history.setItem(row,column,item)
         for kind,label in self.connection_labels.items():
             p=next((p for p in profiles if p['kind']==kind),None)

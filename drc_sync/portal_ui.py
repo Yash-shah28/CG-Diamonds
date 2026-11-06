@@ -773,6 +773,24 @@ def start_activity_refresh(w):
         if hasattr(w, 'client_ids') and cid in w.client_ids:
             row_idx = w.client_ids.index(cid)
             w.clients_table.setCellWidget(row_idx, _COL_ACTIVITY, _make_activity_cell(acc))
+        if hasattr(w, 'dashboard_fetch_info'):
+            latest_fetch = None
+            latest_ts = ""
+            for _cid, _acc in w._access_cache.items():
+                if _acc and isinstance(_acc, dict) and _acc.get('last_fetched_at'):
+                    if _acc['last_fetched_at'] > latest_ts:
+                        latest_ts = _acc['last_fetched_at']
+                        latest_fetch = _acc
+            if latest_fetch and latest_fetch.get('fetch_count'):
+                try: c = w.store.company(latest_fetch.get('client_id'))
+                except Exception: c = None
+                cname = latest_fetch.get('company_name') or (c.get('name') if c else 'Client')
+                f_info = format_access_summary(latest_fetch)
+                w.dashboard_fetch_info.setText(
+                    f"<b>Company:</b> {cname} &nbsp;•&nbsp; <b>{f_info['header']}</b><br>"
+                    f"<span style='color: #2563eb; font-weight: 600;'>{f_info['diamonds']}</span> &nbsp;•&nbsp; "
+                    f"<span style='color: #64748b;'>IP: {f_info['ip']} ({f_info['agent']})</span>"
+                )
     worker.access_updated.connect(on_access_updated)
     w._activity_worker = worker
     worker.start()

@@ -45,9 +45,19 @@ def configure_table(table,row_height=52,select=True):
 
 
 def status_badge(result):
-    colors=('#187344','#eaf7ee') if result in ('Sent to DRC','Success','Published to API','Sent via Gmail') else ('#b42318','#fff0ee') if result=='Failure' else ('#8a5b12','#fff7e5') if result in ('Needs review','Blocked') else ('#526172','#f1f4f7')
-    holder=QWidget();holder.setAttribute(Qt.WA_TransparentForMouseEvents);layout=QHBoxLayout(holder);layout.setContentsMargins(0,0,0,0)
-    badge=QLabel(result);badge.setAlignment(Qt.AlignCenter);badge.setFixedHeight(28);badge.setStyleSheet('background:'+colors[1]+';color:'+colors[0]+';border-radius:13px;padding:3px 8px;font-size:13px;');layout.addWidget(badge)
+    r = str(result or '')
+    if r in ('Sent to DRC','Success','Published to API','Sent via Gmail') or 'fetch' in r.lower():
+        colors = ('#047857', '#ecfdf5', '#a7f3d0')
+    elif r == 'Failure':
+        colors = ('#b91c1c', '#fef2f2', '#fecaca')
+    elif r in ('Needs review', 'Blocked', 'Awaiting retry'):
+        colors = ('#b45309', '#fffbeb', '#fde68a')
+    else:
+        colors = ('#334155', '#f1f5f9', '#e2e8f0')
+    holder = QWidget(); holder.setAttribute(Qt.WA_TransparentForMouseEvents); layout = QHBoxLayout(holder); layout.setContentsMargins(4,4,4,4)
+    badge = QLabel(r); badge.setAlignment(Qt.AlignCenter); badge.setFixedHeight(26)
+    badge.setStyleSheet(f'background:{colors[1]};color:{colors[0]};border:1px solid {colors[2]};border-radius:13px;padding:2px 10px;font-size:12px;font-weight:600;')
+    layout.addWidget(badge)
     return holder
 
 
@@ -127,9 +137,37 @@ def build_ui(w):
     row=QHBoxLayout();w.status=label('Active - Waiting for configured Excel files','muted');row.addWidget(w.status,1);w.pause_button=QPushButton('Pause monitoring');w.pause_button.setObjectName('quiet');w.pause_button.clicked.connect(w.pause);row.addWidget(w.pause_button);publish=QPushButton('Publish inventory');publish.clicked.connect(w.sync);row.addWidget(publish);layout.addLayout(row)
     w.rate_warning=label('','error');w.rate_warning.hide();layout.addWidget(w.rate_warning)
     metrics=QHBoxLayout();metrics.setSpacing(12);w.metric_values={}
-    for key,title in [('Sent to DRC','Published feeds'),('Connected files','Excel connections'),('Needs review','Requires review'),('Failure','Failed uploads')]:
-        frame,inner=card();inner.addWidget(label(title,'muted'));number=label('0','stat');inner.addWidget(number);metrics.addWidget(frame);w.metric_values[key]=number
-    layout.addLayout(metrics);frame,inner=card();inner.addWidget(label('Sync summary'));w.summary=label('','muted');inner.addWidget(w.summary);layout.addWidget(frame);layout.addStretch();w.pages.addWidget(dashboard)
+    for key,title in [('Natural diamonds','Natural Diamonds'),('Lab Grown diamonds','Lab Grown Diamonds'),('Sent to DRC','Published Feeds'),('Needs review','Requires Review')]:
+        frame,inner=card()
+        lbl_title=label(title,'muted')
+        lbl_title.setStyleSheet('font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;')
+        inner.addWidget(lbl_title)
+        number=label('0','stat')
+        number.setStyleSheet('font-size:28px;font-weight:700;color:#0f172a;')
+        inner.addWidget(number)
+        metrics.addWidget(frame)
+        w.metric_values[key]=number
+    layout.addLayout(metrics)
+
+    w.latest_fetch_frame, inner_fetch = card()
+    inner_fetch.setSpacing(6)
+    fetch_title = label('Latest Client API Fetch', 'cardTitle')
+    fetch_title.setStyleSheet('font-size: 15px; font-weight: 700; color: #0f172a;')
+    inner_fetch.addWidget(fetch_title)
+    w.dashboard_fetch_info = label('No client API fetches recorded yet.', 'muted')
+    w.dashboard_fetch_info.setStyleSheet('font-size: 13px; color: #475569; line-height: 1.4;')
+    inner_fetch.addWidget(w.dashboard_fetch_info)
+    layout.addWidget(w.latest_fetch_frame)
+
+    frame,inner=card()
+    sync_title=label('Sync Summary','cardTitle')
+    sync_title.setStyleSheet('font-size: 15px; font-weight: 700; color: #0f172a;')
+    inner.addWidget(sync_title)
+    w.summary=label('','muted')
+    inner.addWidget(w.summary)
+    layout.addWidget(frame)
+    layout.addStretch()
+    w.pages.addWidget(dashboard)
     w.inspect_button=QPushButton('Send once & view response',w);w.inspect_button.hide();w.inspect_button.clicked.connect(w.begin_inspection)
     w.editor=QPlainTextEdit(json.dumps(w.store.get('profiles',[]),indent=2),w);w.editor.hide()
     config,layout=page();layout.addWidget(label('Connect one Excel workbook per inventory type.','muted'));connections=QHBoxLayout();connections.setSpacing(14);w.connection_labels={}
@@ -148,8 +186,8 @@ def build_ui(w):
     w.rate_rows={};rebuild_rate_rows(w);layout.addWidget(w.rate_table);layout.addWidget(label('Add a company in API Access to configure its rate. Previous DRC settings remain stored as legacy data.','muted'));layout.addStretch();w.pages.addWidget(rates)
     history,layout=page();w.history_page=history
     top=QHBoxLayout();caption=label('Upload history and server responses','muted');caption.setWordWrap(False);top.addWidget(caption);top.addStretch();w.history_filter=QComboBox();w.history_filter.addItems(['All results','Published to API','Sent via Gmail','Failure','Awaiting retry','Needs review','Revoked','Suspended','Sent to DRC','Blocked']);w.history_filter.currentIndexChanged.connect(w.refresh);top.addWidget(w.history_filter);layout.addLayout(top)
-    w.history=QTableWidget(0,6);w.history.setHorizontalHeaderLabels(['Date & time','Inventory type','Excel file','Diamonds','Result','Message']);w.history.setEditTriggers(QAbstractItemView.NoEditTriggers);w.history.setSelectionBehavior(QAbstractItemView.SelectRows);w.history.setAlternatingRowColors(True);w.history.setShowGrid(False);w.history.verticalHeader().hide();w.history.verticalHeader().setDefaultSectionSize(42)
-    for index,width in enumerate([185,120,200,90,150]):w.history.setColumnWidth(index,width)
+    w.history=QTableWidget(0,6);w.history.setHorizontalHeaderLabels(['Date & time','Diamond Type','Status','Results (Diamonds)','Type','Message']);w.history.setEditTriggers(QAbstractItemView.NoEditTriggers);w.history.setSelectionBehavior(QAbstractItemView.SelectRows);w.history.setAlternatingRowColors(True);w.history.setShowGrid(False);w.history.verticalHeader().hide();w.history.verticalHeader().setDefaultSectionSize(44)
+    for index,width in enumerate([160,130,140,140,160]):w.history.setColumnWidth(index,width)
     w.history.horizontalHeader().setStretchLastSection(True);w.history.cellDoubleClicked.connect(lambda row,column:w.open_history_response(row));layout.addWidget(w.history,1)
     bottom=QHBoxLayout();bottom.addStretch();button=QPushButton('View response');button.clicked.connect(lambda:w.open_history_response(w.history.currentRow()));bottom.addWidget(button);layout.addLayout(bottom);w.pages.addWidget(history)
     configure_table(w.rate_table,88,False);configure_table(w.history,52);w.nav_group.idClicked.connect(w.navigate);w.navigate(0);w.set_sidebar_collapsed(w.store.get('ui.sidebar_collapsed',False),persist=False)
