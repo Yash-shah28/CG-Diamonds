@@ -158,3 +158,41 @@ real emails, production data changes or stable-channel publication were performe
 Frozen source matched the tested code. The offline executable diagnostic passed
 with zero requests. The 0.7.4 installer compiled successfully; SHA-256 is recorded
 in release/SHA256SUMS-0.7.4.txt. Existing installation and stable feed unchanged.
+
+## Version 0.8.2 fetch status and full-page rates (2026-11-11)
+
+Fixed API activity writes finishing after response return and the desktop retaining
+references to deleted activity workers. Polling restarts correctly, uses the default
+hosting origin when needed, and distinguishes unknown/unavailable activity from
+confirmed absence of fetches. Dashboard follows the same status distinction.
+
+Removed the rates table height ceiling and competing page spacer. Checked 60
+sample companies, last-row visibility, rate edits, and table resizing at 980x680,
+1240x890 and 1240x1050 using isolated SQLite data and no real vault writes.
+
+196 Python tests and 30 backend tests passed; all 9 focused UI/activity tests passed
+after the final Dashboard refinement. Backend commit 7494d30 was pushed and its
+Vercel deployment status verified successful. Anonymous inventory access remained
+HTTP 401. No valid company feed was fetched for testing, no production inventory
+was sent, and no real test companies/emails were created. Installer is local only.
+
+### Authentication audit addition and final 0.8.2 delivery
+
+Added private immutable request audit objects and admin-only paged retrieval for
+accepted, missing, unknown, revoked and suspended company-key authentication.
+Retained hashed key bindings across rotation/revocation; never inferred company
+from IP, agent or a supplied name. Tests verify no raw key in records, log-safe
+metadata, generic 401 responses and private pagination on both storage adapters.
+
+History persists deduplicated audit records in a new table, supports authentication
+result filters and older pages, and displays company, HTTP code, fingerprint and
+result with full request details. Missing/unknown keys show Unknown company.
+Existing profiles, credentials, rates and history were preserved.
+
+198 desktop and 37 backend tests passed. All 11 focused UI/audit tests passed after
+layout refinements. Visually inspected synthetic History rows and 60 sample company
+rate rows. Backend commit c5612ac deployed with Vercel success confirmed.
+Final frozen modules matched source; offline diagnostic passed with zero requests.
+The 0.8.2 installer compiled successfully; SHA-256 is in release/SHA256SUMS-0.8.2.txt.
+Installer remains local; stable automatic updates and the installed app were not
+replaced. Audit capture starts at deployment; older requests cannot be backfilled.

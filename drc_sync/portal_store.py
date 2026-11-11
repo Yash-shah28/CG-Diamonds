@@ -23,6 +23,7 @@ class PortalStore(Store):
     def __init__(self, path, recover=False):
         super().__init__(path)
         self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS portal_auth_audit(request_id TEXT PRIMARY KEY,created REAL NOT NULL,payload TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS portal_cache(kind TEXT PRIMARY KEY,payload TEXT NOT NULL,profile TEXT NOT NULL,updated REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS portal_companies(id TEXT PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL,kinds TEXT NOT NULL,mode TEXT NOT NULL,percent TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 0,key_hash TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,status TEXT NOT NULL DEFAULT 'Draft',published INTEGER NOT NULL DEFAULT 0,published_at REAL,last_email TEXT NOT NULL DEFAULT 'Not sent');
         CREATE TABLE IF NOT EXISTS portal_jobs(id INTEGER PRIMARY KEY,client_id TEXT NOT NULL,revision INTEGER NOT NULL,action TEXT NOT NULL,payload TEXT,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,due REAL NOT NULL DEFAULT 0,created REAL NOT NULL,detail TEXT NOT NULL DEFAULT '',key_hash TEXT NOT NULL,kinds TEXT NOT NULL);
@@ -34,6 +35,28 @@ class PortalStore(Store):
             # Publication is revision-idempotent; email delivery is not.
             self.db.execute("UPDATE portal_jobs SET state='pending' WHERE state='publishing'")
             self.db.execute("UPDATE portal_companies SET last_email='Needs review - send interrupted; verify before resending' WHERE last_email='Sending'")
+        self.db.commit()
+
+    def save_auth_audits(self, entries):
+        import re
+        from datetime import datetime
+        results={'accepted','missing_key','unknown_key','revoked_key','suspended_company'}
+        for event in entries:
+            if not isinstance(event,dict) or event.get('result') not in results: continue
+            request_id=event.get('request_id','')
+            if not isinstance(request_id,str) or not re.fullmatch(r'[a-fA-F0-9-]{36}',request_id): continue
+            fingerprint=event.get('key_fingerprint')
+            if fingerprint is not None and not re.fullmatch(r'[a-f0-9]{12}',str(fingerprint)): continue
+            cid=event.get('client_id')
+            if cid is not None and not re.fullmatch(r'[a-f0-9]{32}',str(cid)): continue
+            try:created=datetime.fromisoformat(event['time'].replace('Z','+00:00')).timestamp()
+            except Exception:continue
+            status=event.get('http_status')
+            if type(status) is not int or not 100<=status<=599:continue
+            record={k:redact_text(str(event.get(k,'')))[:limit] for k,limit in [('company_name',120),('ip',128),('user_agent',512),('method',12)]}
+            if cid is None:record['company_name']='Unknown company'
+            record.update(request_id=request_id,client_id=cid,key_fingerprint=fingerprint,result=event['result'],http_status=status,time=event['time'])
+            self.db.execute('INSERT OR IGNORE INTO portal_auth_audit VALUES (?,?,?)',(request_id,created,encode(record)))
         self.db.commit()
 
     def companies(self):

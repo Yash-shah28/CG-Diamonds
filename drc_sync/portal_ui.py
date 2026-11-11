@@ -71,7 +71,7 @@ def format_access_summary(acc):
     }
 
 
-def _make_activity_cell(acc):
+def _make_activity_cell(acc, error=None, checked=True):
     info = format_access_summary(acc)
     widget = QWidget()
     vbox = QVBoxLayout(widget)
@@ -79,7 +79,8 @@ def _make_activity_cell(acc):
     vbox.setSpacing(2)
 
     if not info:
-        lbl = QLabel("Not fetched yet")
+        lbl = QLabel("Fetch status unavailable" if error else ("Not fetched yet" if checked else "Checking fetch activity..."))
+        if error: widget.setToolTip(error)
         lbl.setStyleSheet("color: #94a3b8; font-size: 12px; font-style: italic;")
         vbox.addWidget(lbl)
         vbox.addStretch()
@@ -106,16 +107,23 @@ def _make_activity_cell(acc):
 
 class ActivityFetchWorker(QThread):
     access_updated = Signal(str, object)
+    access_failed = Signal(str, str)
+    audit_updated = Signal(object)
 
-    def __init__(self, hosting_settings, client_ids):
+    def __init__(self, hosting_settings, client_ids, audit_cursor=None):
         super().__init__()
         self.settings = hosting_settings
         self.client_ids = client_ids
+        self.audit_cursor = audit_cursor
 
     def run(self):
         try:
             client = PortalClient(self.settings)
             try:
+                try:
+                    self.audit_updated.emit(client.auth_audits(self.audit_cursor))
+                except Exception as exc:
+                    self.audit_updated.emit({"error":"Authentication audit unavailable ("+type(exc).__name__+"). Retrying automatically."})
                 for cid in self.client_ids:
                     if self.isInterruptionRequested():
                         break
@@ -123,12 +131,13 @@ class ActivityFetchWorker(QThread):
                         res = client.status(cid)
                         if res and isinstance(res, dict):
                             self.access_updated.emit(cid, res.get('latest_access'))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.access_failed.emit(cid, "Could not check fetch activity ("+type(exc).__name__+"). Retrying automatically.")
             finally:
                 client.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            for cid in self.client_ids:
+                self.access_failed.emit(cid, "Could not check fetch activity ("+type(exc).__name__+"). Check Email & Hosting settings.")
 
 
 def _feed_status_style(status):
@@ -752,13 +761,13 @@ def hosting_settings(w):
     buttons=QDialogButtonBox(QDialogButtonBox.Close);buttons.rejected.connect(d.reject);layout.addWidget(buttons)
     d.exec()
 
-def start_activity_refresh(w, force=False):
+def start_activity_refresh(w, force=False, audit_cursor=None):
     if not hasattr(w, '_access_cache'):
         w._access_cache = {}
     import time
     now = time.monotonic()
     last_run = getattr(w, '_last_activity_refresh', 0)
-    if not force and (now - last_run < 60):
+    if not force and (now - last_run < 15):
         return
 
     old_worker = getattr(w, '_activity_worker', None)
@@ -766,17 +775,17 @@ def start_activity_refresh(w, force=False):
         return
 
     hosting = w.store.get('portal_hosting', {})
-    if not hosting or not hosting.get('base_url'):
-        return
     cids = getattr(w, 'client_ids', [])
-    if not cids:
+    if not cids and not hosting.get("base_url"):
         return
 
     w._last_activity_refresh = now
-    worker = ActivityFetchWorker(hosting, cids)
+    worker = ActivityFetchWorker(hosting, cids, audit_cursor=audit_cursor)
     def on_access_updated(cid, acc):
         try:
             w._access_cache[cid] = acc
+            w._activity_errors.pop(cid, None)
+            w._activity_checked.add(cid)
             if hasattr(w, 'client_ids') and cid in w.client_ids and hasattr(w, 'clients_table'):
                 row_idx = w.client_ids.index(cid)
                 if row_idx < w.clients_table.rowCount():
@@ -802,8 +811,34 @@ def start_activity_refresh(w, force=False):
                         )
         except Exception:
             pass
+    def on_access_failed(cid, detail):
+        w._activity_errors[cid] = detail
+        if cid in getattr(w, 'client_ids', []):
+            row = w.client_ids.index(cid)
+            cell = _make_activity_cell(w._access_cache.get(cid), error=detail)
+            if w._access_cache.get(cid): cell.setToolTip(cell.toolTip()+"\nLatest check failed; showing last confirmed fetch.\n"+detail)
+            w.clients_table.setCellWidget(row, _COL_ACTIVITY, cell)
+    def on_audit_updated(page):
+        if isinstance(page,dict) and page.get('error'):
+            w.auth_audit_note.setText(page['error']);w.auth_audit_note.show();return
+        w.auth_audit_note.hide()
+        if not isinstance(page,dict) or not isinstance(page.get('entries'),list):return
+        w.store.save_auth_audits(page['entries'])
+        if audit_cursor or not hasattr(w,'_audit_next_cursor'):
+            w._audit_next_cursor=page.get('next_cursor')
+        w.refresh()
+    def finished():
+        if hasattr(w,'audit_older_button'):w.audit_older_button.setEnabled(bool(getattr(w,'_audit_next_cursor',None)))
+        if getattr(w, '_activity_worker', None) is worker:
+            w._activity_worker = None
+        worker.deleteLater()
+    w._activity_errors = getattr(w, '_activity_errors', {})
+    w._activity_checked = getattr(w, '_activity_checked', set())
     worker.access_updated.connect(on_access_updated)
-    worker.finished.connect(worker.deleteLater)
+    worker.access_failed.connect(on_access_failed)
+    worker.audit_updated.connect(on_audit_updated)
+    if hasattr(w,"audit_older_button"):w.audit_older_button.setEnabled(False)
+    worker.finished.connect(finished)
     w._activity_worker = worker
     worker.start()
 
@@ -830,7 +865,7 @@ def refresh_companies(w):
         w.clients_table.setItem(i,_COL_EMAIL,item3)
         # Latest Client Fetch Activity
         acc = w._access_cache.get(c['id'])
-        w.clients_table.setCellWidget(i, _COL_ACTIVITY, _make_activity_cell(acc))
+        w.clients_table.setCellWidget(i, _COL_ACTIVITY, _make_activity_cell(acc, error=getattr(w,"_activity_errors",{}).get(c["id"]), checked=c["id"] in getattr(w,"_activity_checked",set())))
         # Status pill (widget)
         pill_holder=QWidget();ph=QHBoxLayout(pill_holder);ph.setContentsMargins(6,6,6,6)
         ph.addWidget(_make_pill(c['status'] or 'Draft'));ph.addStretch()
@@ -840,3 +875,10 @@ def refresh_companies(w):
     if selected in w.client_ids:w.clients_table.selectRow(w.client_ids.index(selected))
     elif companies:w.clients_table.selectRow(0)
     start_activity_refresh(w)
+
+
+def load_older_auth_audits(w):
+    cursor=getattr(w,'_audit_next_cursor',None)
+    if cursor:
+        w._history_limit=getattr(w,'_history_limit',300)+100
+        start_activity_refresh(w,force=True,audit_cursor=cursor)

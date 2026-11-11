@@ -46,9 +46,9 @@ def configure_table(table,row_height=52,select=True):
 
 def status_badge(result):
     r = str(result or '')
-    if r in ('Sent to DRC','Success','Published to API','Sent via Gmail') or 'fetch' in r.lower():
+    if r in ('Sent to DRC','Success','Published to API','Sent via Gmail','Accepted') or 'fetch' in r.lower():
         colors = ('#047857', '#ecfdf5', '#a7f3d0')
-    elif r == 'Failure':
+    elif r in ('Failure','Missing key','Unknown key','Revoked key','Suspended company'):
         colors = ('#b91c1c', '#fef2f2', '#fecaca')
     elif r in ('Needs review', 'Blocked', 'Awaiting retry'):
         colors = ('#b45309', '#fffbeb', '#fde68a')
@@ -182,14 +182,15 @@ def build_ui(w):
     rates,layout=page();layout.addWidget(label('Each company receives its own prices. Saving a rate immediately republishes its last validated inventory.','muted'))
     w.rate_table=QTableWidget(0,5);w.rate_table.setHorizontalHeaderLabels(['Company','Rate change','Percentage (%)','Status','Action'])
     for index,width in enumerate([140,145,170,220,90]):w.rate_table.setColumnWidth(index,width)
-    w.rate_table.horizontalHeader().setSectionResizeMode(3,QHeaderView.Stretch);w.rate_table.setMinimumHeight(160);w.rate_table.setMaximumHeight(560)
-    w.rate_rows={};rebuild_rate_rows(w);layout.addWidget(w.rate_table);layout.addWidget(label('Add a company in API Access to configure its rate. Previous DRC settings remain stored as legacy data.','muted'));layout.addStretch();w.pages.addWidget(rates)
+    w.rate_table.horizontalHeader().setSectionResizeMode(3,QHeaderView.Stretch);w.rate_table.setMinimumHeight(160);w.rate_table.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
+    w.rate_rows={};rebuild_rate_rows(w);layout.addWidget(w.rate_table,1);layout.addWidget(label('Add a company in API Access to configure its rate. Previous DRC settings remain stored as legacy data.','muted'));w.pages.addWidget(rates)
     history,layout=page();w.history_page=history
-    top=QHBoxLayout();caption=label('Upload history and server responses','muted');caption.setWordWrap(False);top.addWidget(caption);top.addStretch();w.history_filter=QComboBox();w.history_filter.addItems(['All results','Published to API','Sent via Gmail','Failure','Awaiting retry','Needs review','Revoked','Suspended','Sent to DRC','Blocked']);w.history_filter.currentIndexChanged.connect(w.refresh);top.addWidget(w.history_filter);layout.addLayout(top)
+    w.auth_audit_note=label("", "muted");w.auth_audit_note.hide();layout.addWidget(w.auth_audit_note)
+    top=QHBoxLayout();caption=label('Inventory and authentication history','muted');caption.setWordWrap(False);top.addWidget(caption);top.addStretch();w.history_filter=QComboBox();w.history_filter.addItems(['All results','Authentication','Accepted','Missing key','Unknown key','Revoked key','Suspended company','Published to API','Sent via Gmail','Failure','Awaiting retry','Needs review','Revoked','Suspended','Sent to DRC','Blocked']);w.history_filter.currentIndexChanged.connect(w.refresh);top.addWidget(w.history_filter);layout.addLayout(top)
     w.history=QTableWidget(0,6);w.history.setHorizontalHeaderLabels(['Date & time','Diamond Type','Status','Results (Diamonds)','Type','Message']);w.history.setEditTriggers(QAbstractItemView.NoEditTriggers);w.history.setSelectionBehavior(QAbstractItemView.SelectRows);w.history.setAlternatingRowColors(True);w.history.setShowGrid(False);w.history.verticalHeader().hide();w.history.verticalHeader().setDefaultSectionSize(44)
     for index,width in enumerate([160,130,140,140,160]):w.history.setColumnWidth(index,width)
     w.history.horizontalHeader().setStretchLastSection(True);w.history.cellDoubleClicked.connect(lambda row,column:w.open_history_response(row));layout.addWidget(w.history,1)
-    bottom=QHBoxLayout();bottom.addStretch();button=QPushButton('View response');button.clicked.connect(lambda:w.open_history_response(w.history.currentRow()));bottom.addWidget(button);layout.addLayout(bottom);w.pages.addWidget(history)
+    bottom=QHBoxLayout();w.audit_older_button=QPushButton('Load older authentication');w.audit_older_button.setEnabled(False);w.audit_older_button.clicked.connect(lambda:__import__('drc_sync.portal_ui',fromlist=['load_older_auth_audits']).load_older_auth_audits(w));bottom.addWidget(w.audit_older_button);bottom.addStretch();button=QPushButton('View response');button.clicked.connect(lambda:w.open_history_response(w.history.currentRow()));bottom.addWidget(button);layout.addLayout(bottom);w.pages.addWidget(history)
     configure_table(w.rate_table,88,False);configure_table(w.history,52);w.nav_group.idClicked.connect(w.navigate);w.navigate(0);w.set_sidebar_collapsed(w.store.get('ui.sidebar_collapsed',False),persist=False)
 
 

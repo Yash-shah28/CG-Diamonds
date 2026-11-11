@@ -236,6 +236,17 @@ class Window(QMainWindow):
                 else:d_type='All'
                 entries.append(dict(id=None,created=created_sec,diamond_type=d_type,op_type=f"Fetch by {cname}",records=tot,result='Success',detail=f"API download from IP {acc.get('last_ip')} using {acc.get('last_user_agent')}. Delivered: {nat} Natural, {lab} Lab Grown."))
 
+        audit_labels={'accepted':'Accepted','missing_key':'Missing key','unknown_key':'Unknown key','revoked_key':'Revoked key','suspended_company':'Suspended company'}
+        for audit_row in self.store.db.execute('SELECT * FROM portal_auth_audit ORDER BY created DESC LIMIT 3000'):
+            audit=json.loads(audit_row['payload'])
+            cname=audit['company_name'];fingerprint=audit.get('key_fingerprint');key_label=('Key ...'+fingerprint) if fingerprint else 'Missing key'
+            status=audit_labels[audit['result']]
+            title='Authentication - '+cname+' - '+key_label+' - '+str(audit['http_status'])
+            detail=(cname+' | '+key_label+' | HTTP '+str(audit['http_status'])+' | '+status+'\n'
+                    +'Company ID: '+str(audit.get('client_id') or 'Unknown')+'\nRequest ID: '+audit['request_id']
+                    +'\nTime (UTC): '+audit['time']+'\nIP: '+audit['ip']+'\nUser agent: '+audit['user_agent']+'\nMethod: '+audit['method'])
+            entries.append(dict(id=None,created=audit_row['created'],diamond_type='API access',op_type=title,records='',result=status,detail=detail,audit=audit))
+
         entries.sort(key=lambda e:e['created'],reverse=True)
 
         nat_row=self.store.db.execute("SELECT payload FROM portal_cache WHERE kind='Natural'").fetchone()
@@ -274,7 +285,12 @@ class Window(QMainWindow):
                 else:
                     self.dashboard_fetch_info.setText("No client API fetches recorded yet.")
             else:
-                self.dashboard_fetch_info.setText("No client API fetches recorded yet.")
+                if getattr(self, '_activity_errors', {}):
+                    self.dashboard_fetch_info.setText("Fetch status unavailable. Check Email & Hosting settings; retrying automatically.")
+                elif getattr(self, 'client_ids', []) and not getattr(self, '_activity_checked', set()):
+                    self.dashboard_fetch_info.setText("Checking client API fetch activity...")
+                else:
+                    self.dashboard_fetch_info.setText("No client API fetches recorded yet.")
 
         def last(label):
             e=next((e for e in entries if e['result']==label),None)
@@ -282,7 +298,12 @@ class Window(QMainWindow):
         self.summary.setText('Last publication: '+last('Published to API')+'\nLast failure: '+last('Failure')+'\nWebsite imports are not confirmed by publication. Legacy DRC requests remain read-only.')
         pending=self.store.db.execute("SELECT COUNT(*) FROM portal_jobs WHERE state IN ('pending','publishing')").fetchone()[0]
         self.rate_warning.setText(str(pending)+' publishing/access operation(s) pending. Check API Access setup if hosting is not ready.');self.rate_warning.setVisible(bool(pending))
-        selected=self.history_filter.currentText();visible=[e for e in entries if selected=='All results' or e['result']==selected][:300]
+        selected=self.history_filter.currentText();visible=[e for e in entries if selected=='All results' or e['result']==selected or (selected=='Authentication' and e.get('op_type','').startswith('Authentication - '))][:getattr(self,'_history_limit',300)]
+        auth_layout=selected in ('Authentication','Accepted','Missing key','Unknown key','Revoked key','Suspended company')
+        if getattr(self,'_history_auth_layout',None)!=auth_layout:
+            self._history_auth_layout=auth_layout
+            self.history.setHorizontalHeaderLabels(['Date & time','Company','Result','HTTP','Key fingerprint','Request details'] if auth_layout else ['Date & time','Diamond Type','Status','Results (Diamonds)','Type','Message'])
+            for column,width in enumerate([160,170,180,65,150] if auth_layout else [160,130,140,140,160]):self.history.setColumnWidth(column,width)
         self.history.setRowCount(len(visible));self.history_ids=[e['id'] for e in visible];self.history_details=[e['detail'] for e in visible]
         for row,e in enumerate(visible):
             d_time=time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(e['created']))
@@ -293,6 +314,8 @@ class Window(QMainWindow):
             detail=e['detail']
 
             values=[d_time,d_type,status,results,op_type,detail]
+            if auth_layout and e.get('audit'):
+                audit=e['audit'];values=[time.strftime('%d %b, %I:%M %p',time.localtime(e['created'])),audit['company_name'],status,str(audit['http_status']),('...'+audit['key_fingerprint']) if audit.get('key_fingerprint') else '-',detail]
             for column,value in enumerate(values):
                 item=QTableWidgetItem('' if column==2 else value);item.setToolTip(value)
                 if column==2:item.setData(Qt.UserRole,value);self.history.setCellWidget(row,column,status_badge(value))

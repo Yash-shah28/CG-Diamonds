@@ -45,6 +45,8 @@ class PortalClient:
         except HostingError:raise
         except Exception as exc:raise HostingError('Hosting connection failed ('+type(exc).__name__+'). No credentials are shown.') from None
 
+    def auth_audits(self, cursor=None):return self.admin({'action':'auth-audit',**({'cursor':cursor} if cursor else {})})
+
     def status(self, client_id):return self.admin({'action':'status','client_id':client_id})
 
     def publish(self, job, company_name=None):
