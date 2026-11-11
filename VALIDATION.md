@@ -196,3 +196,14 @@ Final frozen modules matched source; offline diagnostic passed with zero request
 The 0.8.2 installer compiled successfully; SHA-256 is in release/SHA256SUMS-0.8.2.txt.
 Installer remains local; stable automatic updates and the installed app were not
 replaced. Audit capture starts at deployment; older requests cannot be backfilled.
+
+
+## 0.8.2 publication (2026-11-11)
+
+Published tested source commit 55881be and GitHub release v0.8.2 with the installer
+and SHA-256 checksum asset. The public GitHub download matched the tested local
+53,476,923-byte artifact. Published the signed stable feed and independently
+verified its Ed25519 signature, version 0.8.2, and the installer retrieved through
+/api/download against SHA-256
+2763111695331c8034e9e6d48eb5b0fc39b925b72dc10145a03dabc8dc9c8de9.
+No production inventory or email was sent by the release process.

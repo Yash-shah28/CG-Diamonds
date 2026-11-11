@@ -35,3 +35,11 @@ The owner explicitly requested publication after the setup limitations were
 reported. Stable now serves 0.7.0. The earlier pre-release status above is historical;
 private hosting and Google sender setup remain required for live use. The live
 manifest signature and downloaded installer size/SHA-256 were verified.
+
+
+## Current stable: 0.8.2 (2026-11-11)
+
+Published at the owner's request. Installers are hosted on GitHub Releases; the
+existing Vercel feed serves the signed release metadata and /api/download redirects
+to the current installer. Live signature and downloaded artifact size/SHA-256 were
+verified. This supersedes the historical release-state descriptions above.

@@ -15,4 +15,5 @@ companies in isolated data at three window sizes. No production company records,
 inventory uploads or invitation emails were created during testing. Lost historical
 fetch records and requests before audit deployment cannot be reconstructed.
 
-This local installer has not been published to the automatic update channel.
+Published on 2026-11-11 to the signed stable update channel and GitHub release v0.8.2.
+Live signature, public download size and SHA-256 were verified.
