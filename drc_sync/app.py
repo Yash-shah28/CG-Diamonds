@@ -448,6 +448,15 @@ class Window(QMainWindow):
             self.update_status('Mappings suggested. Preview the API payload, then save profiles.')
         except Exception as exc:
             QMessageBox.warning(self, 'Mapping failed', workbook_error(locals().get('profile',{}),exc)+'\nNo mappings were saved.')
+    def show_inventory(self, kind):
+        profile = next((p for p in self.store.get('profiles', []) if p.get('kind') == kind), None)
+        if profile is None:
+            QMessageBox.information(self, f'{kind} Diamonds',
+                                    f'Connect a {kind} workbook in Excel Mapping to view its inventory.')
+            return
+        from .dashboard import show_workbook_inventory
+        show_workbook_inventory(self, profile)
+
     def preview_payload(self):
         try:
             profiles = self.read_profiles()

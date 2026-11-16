@@ -138,14 +138,30 @@ def build_ui(w):
     w.rate_warning=label('','error');w.rate_warning.hide();layout.addWidget(w.rate_warning)
     metrics=QHBoxLayout();metrics.setSpacing(12);w.metric_values={}
     for key,title in [('Natural diamonds','Natural Diamonds'),('Lab Grown diamonds','Lab Grown Diamonds'),('Sent to DRC','Published Feeds'),('Needs review','Requires Review')]:
-        frame,inner=card()
+        kind = {'Natural diamonds': 'Natural', 'Lab Grown diamonds': 'Lab Grown'}.get(key)
+        if kind:
+            frame = QPushButton()
+            frame.setObjectName('quiet')
+            frame.setAccessibleName(title)
+            frame.setToolTip(f'View {kind} inventory')
+            frame.setCursor(Qt.PointingHandCursor)
+            frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            inner = QVBoxLayout(frame)
+            inner.setContentsMargins(18, 18, 18, 18)
+            inner.setSpacing(12)
+            frame.clicked.connect(lambda checked=False, inventory_kind=kind: w.show_inventory(inventory_kind))
+        else:
+            frame, inner = card()
         lbl_title=label(title,'muted')
         lbl_title.setStyleSheet('font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;')
         inner.addWidget(lbl_title)
         number=label('0','stat')
         number.setStyleSheet('font-size:28px;font-weight:700;color:#0f172a;')
         inner.addWidget(number)
-        metrics.addWidget(frame)
+        if kind:
+            lbl_title.setAttribute(Qt.WA_TransparentForMouseEvents)
+            number.setAttribute(Qt.WA_TransparentForMouseEvents)
+        metrics.addWidget(frame, 1)
         w.metric_values[key]=number
     layout.addLayout(metrics)
 
