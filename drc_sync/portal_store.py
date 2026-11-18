@@ -157,7 +157,38 @@ class PortalStore(Store):
         self.db.execute('UPDATE portal_companies SET active=0 WHERE id=?',(client_id,)); self.db.commit()
         return self.queue(client_id,'revoke')
 
+    def remove_company(self, client_id):
+        company = self.company(client_id)
+        confirmed_revocation = not company['active'] and self.db.execute(
+            "SELECT 1 FROM portal_jobs WHERE client_id=? AND action='revoke' AND state='revoked'",
+            (client_id,),
+        ).fetchone()
+        with self.db:
+            if company['revision'] == 0 or confirmed_revocation:
+                self._delete_company(company)
+                return True
+            pending = self.db.execute(
+                "SELECT 1 FROM portal_jobs WHERE client_id=? AND action='delete' AND state='pending'",
+                (client_id,),
+            ).fetchone()
+            if not pending:
+                self.db.execute('UPDATE portal_companies SET active=0 WHERE id=?', (client_id,))
+                self.queue(client_id, 'delete')
+        return False
+
+    def _delete_company(self, company):
+        client_id = company['id']
+        self.db.execute(
+            "INSERT INTO portal_history(created,client_id,name,event,state,detail) VALUES (?,?,?,?,?,?)",
+            (time.time(), client_id, company['name'], 'Delete', 'Removed', 'Company removed from client feeds.'),
+        )
+        for table in ('portal_mail_requests', 'portal_jobs', 'portal_companies'):
+            column = 'id' if table == 'portal_companies' else 'client_id'
+            self.db.execute(f'DELETE FROM {table} WHERE {column}=?', (client_id,))
+
     def change_scope(self, client_id, kinds):
+        if not self.company(client_id)['active']:
+            raise ValueError('This company is revoked. Create new access instead.')
         if not kinds or any(k not in KINDS for k in kinds):raise ValueError('Select at least one inventory type.')
         self.db.execute('UPDATE portal_companies SET kinds=? WHERE id=?',(encode(list(dict.fromkeys(kinds))),client_id));self.db.commit()
         self.queue(client_id,'suspend')
@@ -174,9 +205,13 @@ class PortalStore(Store):
         return self.queue(client_id)
 
     def pending(self):
-        return self.db.execute("SELECT * FROM portal_jobs j WHERE state='pending' AND due<=? AND NOT (action='publish' AND EXISTS (SELECT 1 FROM portal_jobs b WHERE b.client_id=j.client_id AND b.action IN ('revoke','suspend') AND b.state IN ('pending','publishing','failed'))) ORDER BY CASE WHEN action IN ('revoke','suspend') THEN 0 ELSE 1 END,id LIMIT 1",(time.time(),)).fetchone()
+        return self.db.execute("SELECT * FROM portal_jobs j WHERE state='pending' AND due<=? AND NOT (action='publish' AND EXISTS (SELECT 1 FROM portal_jobs b WHERE b.client_id=j.client_id AND b.action IN ('revoke','suspend','delete') AND b.state IN ('pending','publishing','failed'))) ORDER BY CASE WHEN action IN ('revoke','suspend','delete') THEN 0 ELSE 1 END,id LIMIT 1",(time.time(),)).fetchone()
 
     def finish_portal(self, job, state, detail, retry=False):
+        if job['action'] == 'delete' and state == 'removed':
+            with self.db:
+                self._delete_company(self.company(job['client_id']))
+            return
         detail = redact_text(detail)[:1800]
         due = time.time()+min(300,5*2**min(job['attempts'],6))
         self.db.execute('UPDATE portal_jobs SET state=?,attempts=attempts+1,due=?,detail=? WHERE id=?',('pending' if retry else state,due,detail,job['id']))

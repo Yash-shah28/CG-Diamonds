@@ -76,4 +76,5 @@ class PortalClient:
         return self.admin({'action':'commit',**metadata})
 
     def control(self, job):
-        return self.admin({'action':job['action'],'client_id':job['client_id'],'revision':job['revision']})
+        action = 'revoke' if job['action'] == 'delete' else job['action']
+        return self.admin({'action':action,'client_id':job['client_id'],'revision':job['revision']})

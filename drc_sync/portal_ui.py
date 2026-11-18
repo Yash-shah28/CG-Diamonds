@@ -411,7 +411,8 @@ def _row_actions(w, company_id):
     delete.setObjectName('quiet')
     delete.setFixedHeight(30)
     delete.setFixedWidth(30)
-    delete.setToolTip('Revoke & delete feed')
+    delete.setToolTip('Delete feed')
+    delete.setAccessibleName('Delete feed')
     delete.setStyleSheet(
         'font-size:13px;padding:0;border-radius:4px;'
         'background:white;color:#a33b35;border:1px solid #f5c6c3;'
@@ -439,10 +440,11 @@ def _row_actions(w, company_id):
         if not c:
             return
         if QMessageBox.question(
-            w, 'Revoke feed access',
-            f"Revoke API access for {c['name']}?\nThis does not delete its history."
+            w, 'Delete feed',
+            f"Delete {c['name']} from Client Feeds?\nAny remaining API access will be revoked. History will be kept.",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
         ) == QMessageBox.Yes:
-            w.worker.request('revoke', c['id'])
+            w.worker.request('delete', c['id'])
 
     pub.clicked.connect(do_publish)
     edit.clicked.connect(do_edit)

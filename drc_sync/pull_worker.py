@@ -82,6 +82,13 @@ class PullWorker(QThread):
             store.db.execute('INSERT OR REPLACE INTO portal_mail_requests VALUES (?,?)',(value,'waiting'));store.db.commit()
             self.task_done.emit(action,'Access will be emailed after the current feed is confirmed online.');return
         if action=='revoke':store.revoke(value);self.task_done.emit(action,'Revocation queued. Access is revoked only after hosting confirms it.');return
+        if action == 'delete':
+            company = store.company(value)
+            if store.remove_company(value):
+                self.task_done.emit('delete', company['name'] + ' was removed from Client Feeds.')
+            else:
+                self.task_done.emit('delete-pending', 'Removal queued. The feed is removed after hosting confirms revocation.')
+            return
         if action=='scope':
             store.change_scope(value['id'],value['kinds']);self.task_done.emit(action,'Inventory access change queued.');return
         raise ValueError('Unknown background task.')
@@ -104,6 +111,11 @@ class PullWorker(QThread):
             else:
                 result=client.control(job)
                 if result.get('revision')!=job['revision']:raise HostingError('Hosting did not confirm this access revision.')
+                if job['action'] == 'delete':
+                    company = store.company(job['client_id'])
+                    store.finish_portal(job, 'removed', 'Hosting confirmed revocation.')
+                    self.task_done.emit('delete', company['name'] + ' was removed from Client Feeds.')
+                    return
                 store.finish_portal(job,'revoked' if job['action']=='revoke' else 'suspended','Hosting confirmed the access change.')
             self.changed.emit('API '+job['action']+' confirmed; see History')
         except HostingError as exc:

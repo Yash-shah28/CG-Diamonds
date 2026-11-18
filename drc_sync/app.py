@@ -121,6 +121,8 @@ class Window(QMainWindow):
         editor=QPlainTextEdit(redact_text(detail));editor.setReadOnly(True);layout.addWidget(editor)
         buttons=QDialogButtonBox(QDialogButtonBox.Close);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons);dialog.exec()
     def task_finished(self, action, message):
+        if action == 'delete':
+            self.rebuild_rates()
         if action=='error':self.notify_problem('operation',message)
         else:
             self.api_setup_status.setText(message);self.update_status(message)
