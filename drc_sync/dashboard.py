@@ -34,10 +34,10 @@ def show_workbook_inventory(parent, profile):
     from decimal import Decimal, InvalidOperation
     from openpyxl import load_workbook
     from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-    from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableView)
+    from PySide6.QtGui import QShortcut
+    from PySide6.QtWidgets import QDialog, QMessageBox, QTableView, QVBoxLayout
     from .contract import suggested_field
     from .core import WorkbookValidationError
-    from .dialogs import dialog_layout
     from .workbook_errors import workbook_error
 
     title = f"{profile['kind']} Diamonds"
@@ -89,7 +89,6 @@ def show_workbook_inventory(parent, profile):
 
     while rows and all(value is None for value in rows[-1]):
         rows.pop()
-    stone_count = sum(any(value is not None and value != '' for value in row) for row in rows)
     columns = max((len(row) for row in rows), default=0)
     columns = max(columns, len(headers))
 
@@ -115,16 +114,13 @@ def show_workbook_inventory(parent, profile):
 
     dialog = QDialog(parent)
     dialog.setWindowTitle(title)
-    dialog.setWindowFlag(Qt.WindowMaximizeButtonHint)
+    dialog.setWindowFlags(
+        Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+        | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
+    )
     dialog.resize(1100, 650)
-    layout = dialog_layout(dialog)
-    toolbar = QHBoxLayout()
-    count = QLabel(f"{stone_count:,} {'stone' if stone_count == 1 else 'stones'}")
-    count.setObjectName('dialogTitle')
-    toolbar.addWidget(count)
-    toolbar.addStretch()
-    full_screen = QPushButton('Full screen')
-    full_screen.setObjectName('quiet')
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(0, 0, 0, 0)
 
     previous_window_state = Qt.WindowNoState
 
@@ -132,36 +128,38 @@ def show_workbook_inventory(parent, profile):
         nonlocal previous_window_state
         if dialog.isFullScreen():
             dialog.setWindowState(previous_window_state)
-            full_screen.setText('Full screen')
         else:
             previous_window_state = dialog.windowState()
             dialog.showFullScreen()
-            full_screen.setText('Exit full screen')
 
-    full_screen.clicked.connect(toggle_full_screen)
-    toolbar.addWidget(full_screen)
-    layout.addLayout(toolbar)
-    source = QLabel(f"{Path(profile['path']).name}  ·  {sheet_name}")
-    source.setTextFormat(Qt.PlainText)
-    layout.addWidget(source)
-    if rows:
-        table = QTableView(dialog)
-        table.setModel(InventoryModel(table))
-        table.horizontalHeader().setDefaultSectionSize(160)
-        for index in discount_columns:
-            caption_width = table.horizontalHeader().fontMetrics().horizontalAdvance(str(headers[index]))
-            table.setColumnWidth(index, max(160, caption_width + 55))
-        row_header = table.verticalHeader()
-        row_header.setStyleSheet(
-            'QHeaderView::section { color: #1e293b; background: #f1f5f9; padding: 0 10px; }'
-        )
-        row_header.setMinimumWidth(row_header.fontMetrics().horizontalAdvance(str(len(rows) + 1)) + 26)
-        table.setHorizontalScrollMode(QTableView.ScrollPerPixel)
-        table.setAlternatingRowColors(True)
-        layout.addWidget(table, 1)
-    else:
-        layout.addWidget(QLabel('This worksheet has no inventory rows.'), 1)
-    buttons = QDialogButtonBox(QDialogButtonBox.Close)
-    buttons.rejected.connect(dialog.reject)
-    layout.addWidget(buttons)
+    shortcut = QShortcut('F11', dialog)
+    shortcut.activated.connect(toggle_full_screen)
+
+    table = QTableView(dialog)
+    table.setModel(InventoryModel(table))
+    table.setHorizontalScrollMode(QTableView.ScrollPerPixel)
+    table.setAlternatingRowColors(True)
+    table.setStyleSheet('''
+        QTableView {
+            background: #ffffff;
+            alternate-background-color: #f8fafc;
+            color: #0f172a;
+            selection-background-color: #dbeafe;
+            selection-color: #0f172a;
+            gridline-color: #e2e8f0;
+            border: none;
+        }
+        QTableCornerButton::section { background: #f1f5f9; border: none; }
+    ''')
+    header = table.horizontalHeader()
+    header.setDefaultSectionSize(160)
+    for index in discount_columns:
+        caption_width = header.fontMetrics().horizontalAdvance(str(headers[index]))
+        table.setColumnWidth(index, max(160, caption_width + 55))
+    row_header = table.verticalHeader()
+    row_header.setStyleSheet(
+        'QHeaderView::section { color: #1e293b; background: #f1f5f9; padding: 0 10px; }'
+    )
+    row_header.setMinimumWidth(row_header.fontMetrics().horizontalAdvance(str(len(rows) + 1)) + 26)
+    layout.addWidget(table)
     dialog.exec()
