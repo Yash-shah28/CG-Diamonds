@@ -3,11 +3,12 @@ import json
 import re
 from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QTableWidget,
- QTableWidgetItem,QDialog,QFormLayout,QLineEdit,QCheckBox,QFileDialog,QMessageBox,QDialogButtonBox,QHeaderView,QTabWidget,QFrame,QAbstractItemView)
+ QTableWidgetItem,QDialog,QFormLayout,QLineEdit,QCheckBox,QMessageBox,QDialogButtonBox,QHeaderView,QTabWidget,QFrame,QAbstractItemView)
 from .portal_client import PortalClient
 from .dialogs import dialog_layout,dialog_buttons
 from .portal_client import DEFAULT_BASE,clean_base
 from . import portal_secrets
+from .yahoo_mail import MailError, validate_credentials
 
 
 # ── column indices ──────────────────────────────────────────────
@@ -662,67 +663,85 @@ def hosting_settings(w):
     d=QDialog(w);d.setWindowTitle('Email & Hosting Settings');d.resize(650,560);layout=dialog_layout(d)
     tabs=QTabWidget();layout.addWidget(tabs,1)
     
-    # Tab 1: Gmail App Password (SMTP) & OAuth
-    mail_tab=QWidget();mail_layout=QVBoxLayout(mail_tab);mail_layout.setContentsMargins(12,12,12,12);mail_layout.setSpacing(14)
-    m_info=QLabel('Configure Gmail to send inventory invitation emails. Use a 16-character Google App Password (recommended, does not expire) or Desktop OAuth.')
-    m_info.setWordWrap(True);mail_layout.addWidget(m_info)
-    
-    m_form=QFormLayout();m_form.setSpacing(12)
-    smtp_sender,smtp_pw=portal_secrets.get_smtp_credentials()
-    gmail_user=QLineEdit(smtp_sender or '');gmail_user.setPlaceholderText('yourname@gmail.com')
-    app_pw_input=QLineEdit(smtp_pw or '');app_pw_input.setEchoMode(QLineEdit.Password)
-    app_pw_input.setPlaceholderText('16-character Google App Password')
-    
-    pw_row=QHBoxLayout();pw_row.addWidget(app_pw_input,1)
-    toggle_pw=QPushButton('Show');toggle_pw.setObjectName('quiet')
-    def toggle_show():
-        if app_pw_input.echoMode()==QLineEdit.Password:
-            app_pw_input.setEchoMode(QLineEdit.Normal);toggle_pw.setText('Hide')
-        else:
-            app_pw_input.setEchoMode(QLineEdit.Password);toggle_pw.setText('Show')
-    toggle_pw.clicked.connect(toggle_show)
-    pw_row.addWidget(toggle_pw)
-    
-    m_form.addRow('Gmail Sender',gmail_user)
-    m_form.addRow('App Password',pw_row)
-    mail_layout.addLayout(m_form)
-    
-    mail_status=QLabel();mail_status.setWordWrap(True);mail_layout.addWidget(mail_status)
-    
-    m_btns=QHBoxLayout()
-    save_smtp=QPushButton('Save App Password')
-    test_smtp=QPushButton('Test Connection');test_smtp.setObjectName('quiet')
-    oauth_btn=QPushButton('Connect via OAuth JSON');oauth_btn.setObjectName('quiet')
-    m_btns.addWidget(save_smtp);m_btns.addWidget(test_smtp);m_btns.addWidget(oauth_btn)
-    mail_layout.addLayout(m_btns)
-    
-    def on_save_smtp():
-        u=gmail_user.text().strip();p=app_pw_input.text().strip().replace(' ','')
-        if not u or not p:
-            mail_status.setText('Enter your Gmail address and 16-character App Password.')
-            return
-        portal_secrets.put_smtp_credentials(u,p)
-        mail_status.setText('Gmail App Password saved securely in Windows Credential Manager.')
-    save_smtp.clicked.connect(on_save_smtp)
-    
-    def on_test_smtp():
-        u=gmail_user.text().strip();p=app_pw_input.text().strip().replace(' ','')
-        if not u or not p:
-            mail_status.setText('Enter your Gmail address and App Password before testing.')
-            return
-        mail_status.setText('Testing connection to smtp.gmail.com...')
-        w.worker.request('smtp-test',{'sender':u,'password':p})
-    test_smtp.clicked.connect(on_test_smtp)
-    
-    def on_oauth_connect():
-        path,_=QFileDialog.getOpenFileName(d,'Select Google Desktop OAuth client','','JSON (*.json)')
-        if path:
-            w.worker.request('google',path)
-            mail_status.setText('Complete Google sign-in in your browser.')
-    oauth_btn.clicked.connect(on_oauth_connect)
+    mail_tab = QWidget()
+    mail_layout = QVBoxLayout(mail_tab)
+    mail_layout.setContentsMargins(12, 12, 12, 12)
+    mail_layout.setSpacing(14)
+    info = QLabel('Enter your Yahoo email address and the app password generated in Yahoo Account Security.')
+    info.setWordWrap(True)
+    mail_layout.addWidget(info)
+
+    form = QFormLayout()
+    sender, password = portal_secrets.get_smtp_credentials()
+    sender_input = QLineEdit(sender or '')
+    sender_input.setPlaceholderText('yourname@yahoo.com')
+    password_input = QLineEdit()
+    if password:
+        password_input.setPlaceholderText('App password saved')
+    password_input.setEchoMode(QLineEdit.Password)
+
+    password_row = QHBoxLayout()
+    password_row.addWidget(password_input, 1)
+    show_password = QPushButton('Show')
+    show_password.setCheckable(True)
+    show_password.setObjectName('quiet')
+
+    def toggle_password(visible):
+        password_input.setEchoMode(QLineEdit.Normal if visible else QLineEdit.Password)
+        show_password.setText('Hide' if visible else 'Show')
+
+    show_password.toggled.connect(toggle_password)
+    password_row.addWidget(show_password)
+    form.addRow('Yahoo Email', sender_input)
+    form.addRow('App Password', password_row)
+    mail_layout.addLayout(form)
+
+    buttons = QHBoxLayout()
+    save_smtp = QPushButton('Save App Password')
+    test_smtp = QPushButton('Test Connection')
+    test_smtp.setObjectName('quiet')
+    buttons.addWidget(save_smtp)
+    buttons.addWidget(test_smtp)
+    buttons.addStretch()
+    mail_layout.addLayout(buttons)
+    mail_status = QLabel()
+    mail_status.setWordWrap(True)
+    mail_layout.addWidget(mail_status)
     mail_layout.addStretch()
-    tabs.addTab(mail_tab,'Gmail Sender')
-    
+
+    def entered_credentials():
+        email = sender_input.text().strip()
+        entered = password_input.text()
+        if not entered and email.casefold() == (sender or '').casefold():
+            entered = password
+        return validate_credentials(email, entered)
+
+    def save_credentials():
+        try:
+            credentials = entered_credentials()
+            portal_secrets.put_smtp_credentials(*credentials)
+        except MailError as exc:
+            mail_status.setText(str(exc))
+        except Exception:
+            mail_status.setText('Could not save the app password. Check Windows Credential Manager.')
+        else:
+            mail_status.setText('Yahoo Mail app password saved in Windows Credential Manager.')
+
+    def test_credentials():
+        try:
+            email, app_password = entered_credentials()
+        except MailError as exc:
+            mail_status.setText(str(exc))
+            return
+        mail_status.setText('Testing Yahoo Mail login…')
+        w.worker.request('smtp-test', {'sender': email, 'password': app_password})
+
+    save_smtp.clicked.connect(save_credentials)
+    test_smtp.clicked.connect(test_credentials)
+    w.worker.smtp_test_done.connect(mail_status.setText)
+    d.finished.connect(lambda _: w.worker.smtp_test_done.disconnect(mail_status.setText))
+    tabs.addTab(mail_tab, 'Yahoo Sender')
+
     # Tab 2: Hosting & Vercel Setup
     host_tab=QWidget();host_layout=QVBoxLayout(host_tab);host_layout.setContentsMargins(12,12,12,12);host_layout.setSpacing(14)
     h_form=QFormLayout();h_form.setSpacing(12)

@@ -1,4 +1,4 @@
-"""Separate Windows vault slots for publishing, company keys and Google tokens."""
+"""Separate Windows vault slots for publishing, company keys and Yahoo Mail credentials."""
 import json
 import re
 from keyring.backends.Windows import WinVaultKeyring
@@ -23,13 +23,14 @@ def hosting_slot(origin):
     return 'hosting-admin:'+hashlib.sha256(origin.encode()).hexdigest()
 
 def get_smtp_credentials():
-    sender = get_secret('google-smtp-sender') or get_secret('google-sender')
-    password = get_secret('google-smtp-password')
-    return sender, password
+    raw = get_secret('yahoo-smtp-credentials')
+    if not raw:
+        return None, None
+    try:
+        credentials = json.loads(raw)
+        return credentials['sender'], credentials['password']
+    except (ValueError, TypeError, KeyError):
+        return None, None
 
 def put_smtp_credentials(sender, password):
-    if sender:
-        put_secret('google-smtp-sender', sender.strip())
-        put_secret('google-sender', sender.strip())
-    if password is not None:
-        put_secret('google-smtp-password', password.strip())
+    put_secret('yahoo-smtp-credentials', json.dumps({'sender': sender, 'password': password}))

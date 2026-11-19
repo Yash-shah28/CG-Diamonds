@@ -1,14 +1,15 @@
 """Persistence and configurable, deliberately conservative DRC adapter."""
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 import httpx
 from openpyxl import load_workbook
 
-from .contract import ENDPOINT, FORMAT, migrate_profile
+from .contract import ENDPOINT, FORMAT, IMAGE_FIELDS, PULL_FEED_VERSION, migrate_profile, suggested_field
 from .responses import MAX_BODY, safe_body, redact_text, queued_acceptance
 from .diagnostics import failure_detail
 from .rates import rate_config, RateConfigError
@@ -97,7 +98,14 @@ class Store:
             self.db.execute('INSERT INTO errors(profile,created,detail) VALUES (?,?,?)', (profile,time.time(),detail))
             self.db.commit()
 
-def parse_excel(profile):
+_DEPTH_TABLE_FIELDS = {'Depth %', 'Table'}
+_NON_NUMERIC_FIELDS = IMAGE_FIELDS | {
+    'StockId', 'stock_id', 'Lot #', 'Certificate #', 'Certificate Image', 'Laser Inscription',
+    'Diamond Type', 'Status', 'Video', 'Comment', 'Certificate Comment',
+}
+
+
+def parse_excel(profile, *, pull_feed=False):
     path = Path(profile['path'])
     if path.suffix.lower() != '.xlsx' or path.name.startswith('~$'):
         raise WorkbookValidationError('Select a valid .xlsx inventory workbook')
@@ -131,21 +139,34 @@ def parse_excel(profile):
         for column in mapping:
             if headers.count(column) != 1:
                 raise WorkbookValidationError(f"Column '{column}' is missing. Update Excel Mapping to match the workbook headers." if headers.count(column) == 0 else f"Column '{column}' appears more than once. Give each Excel header a unique name.")
+        mapped_columns = [(headers.index(column), field) for column, field in mapping.items()]
+        numeric_fields = set(profile.get('numeric', ()))
+        decimal_fields = numeric_fields | set(profile.get('decimal_fields', ())) | {'PricePerCarat'}
+        non_numeric_fields = _NON_NUMERIC_FIELDS | {profile.get('identity')}
+        if pull_feed:
+            mapped_columns.extend(
+                (index, 'Image') for index, header in enumerate(headers)
+                if header and header not in mapping and suggested_field(header) in IMAGE_FIELDS
+            )
+            mapped_columns.sort()
         result = []; source_rows = []
         for number, row in enumerate(rows, 2):
             calculated = next(cached_rows, ()) if cached_rows is not None else ()
             if all(cell.value is None for cell in row):
                 continue
             record = {}
-            for column, field in mapping.items():
-                index = headers.index(column)
+            images = []
+            for index, field in mapped_columns:
+                column = headers[index]
                 cell = row[index]
                 value = cell.value
                 if cell.data_type == 'f':
                     if cached is None:
                         raise WorkbookValidationError(f"Row {number}, column '{column}': a formula is present. Natural workbooks require saved values instead of formulas.")
                     result_cell = calculated[index] if index < len(calculated) else None
-                    if result_cell is None or result_cell.value is None:
+                    cached_blank = (pull_feed and result_cell is not None and result_cell.value is None
+                                    and result_cell.data_type in ('str', 's', 'inlineStr'))
+                    if result_cell is None or (result_cell.value is None and not cached_blank):
                         raise FormulaResultError(f'Row {number}, {column}: formula has no saved result. Open the workbook in Excel, recalculate, then save it again.')
                     if result_cell.data_type == 'e':
                         raise FormulaResultError(f'Row {number}, {column}: formula result is an Excel error. Correct it in Excel and save again.')
@@ -158,25 +179,54 @@ def parse_excel(profile):
                         raise WorkbookValidationError(f"Row {number}, column '{column}': a formula is present. Natural workbooks require saved values instead of formulas.")
                 if value is not None and not isinstance(value, (str, int, float, bool)):
                     raise WorkbookValidationError(f"Row {number}, column '{column}': unsupported cell type. Use text or a number.")
-                if value in (None, '') and profile.get('omit_blank'):
+                if pull_feed and field in IMAGE_FIELDS:
+                    if isinstance(value, str) and value and value not in images:
+                        images.append(value)
                     continue
-                if field in profile.get('numeric', []) or field in profile.get('decimal_fields', []) or field == 'PricePerCarat':
+                if value in (None, ''):
+                    if pull_feed:
+                        record[field] = ''
+                        continue
+                    if profile.get('omit_blank'):
+                        continue
+                typed_number = (pull_feed and type(value) in (int, float) and field not in non_numeric_fields)
+                if field in decimal_fields or typed_number:
                     try:
                         if isinstance(value, bool):
                             raise WorkbookValidationError()
-                        number_value = Decimal(str(value))
-                        if not number_value.is_finite() or ((field in profile.get('numeric', []) or field == 'PricePerCarat') and number_value <= 0):
+                        raw = str(value)
+                        if pull_feed and field in _DEPTH_TABLE_FIELDS and raw.endswith('%'):
+                            number_value = Decimal(raw[:-1].strip())
+                        else:
+                            number_value = Decimal(raw)
+                            if pull_feed and field in _DEPTH_TABLE_FIELDS and type(value) in (int, float):
+                                number_format = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.|_.|\*.', '', cell.number_format or '')
+                                if '%' in number_format:
+                                    number_value = number_value.scaleb(2)
+                        positive = field in numeric_fields or field == 'PricePerCarat'
+                        if not number_value.is_finite() or (positive and number_value <= 0):
                             raise WorkbookValidationError()
-                        value = format(number_value.normalize(), 'f') if field in profile.get('string_fields', []) else float(number_value)
+                        if pull_feed:
+                            if field != 'PricePerCarat':
+                                number_value = number_value.quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+                                if positive and number_value <= 0:
+                                    raise WorkbookValidationError(f"Row {number}, column '{column}': value must be at least 0.01.")
+                                if not number_value:
+                                    number_value = abs(number_value)
+                            value = format(number_value, 'f')
+                        else:
+                            value = format(number_value.normalize(), 'f') if field in profile.get('string_fields', []) else float(number_value)
                     except (TypeError, ValueError, InvalidOperation):
                         raise WorkbookValidationError(f"Row {number}, column '{column}' ({field}): invalid numeric value. Enter a {'positive ' if field in profile.get('numeric', []) or field == 'PricePerCarat' else ''}finite number.")
                 elif field in profile.get('string_fields', []) and value is not None:
                     value = str(value)
                 record[field] = value
+            if pull_feed:
+                record['Image'] = images
             if profile.get('request_format') == FORMAT:
                 expected_type = {'Natural':'NATURAL', 'Lab Grown':'LAB_GROWN'}[profile['kind']]
                 actual_type = record.get('Diamond Type')
-                if actual_type is not None:
+                if actual_type not in (None, '') or (actual_type == '' and not pull_feed):
                     normalized = str(actual_type).upper().replace(' ', '').replace('_', '').replace('-', '').replace('/', '')
                     normalized = {'NATURAL':'NATURAL', 'NATURALDIAMOND':'NATURAL', 'NATURALDIAMONDS':'NATURAL', 'LAB':'LAB_GROWN', 'LABGROWN':'LAB_GROWN', 'LABGROWNDIAMOND':'LAB_GROWN', 'LABGROWNDIAMONDS':'LAB_GROWN', 'LGD':'LAB_GROWN'}.get(normalized)
                     if normalized != expected_type:
@@ -209,7 +259,10 @@ def parse_excel(profile):
         wb.close()
     if before != (path.stat().st_size, path.stat().st_mtime_ns):
         raise WorkbookValidationError('Workbook changed while reading; waiting for next scan')
-    return {'diamonds': result}
+    payload = {'diamonds': result}
+    if pull_feed:
+        payload['format_version'] = PULL_FEED_VERSION
+    return payload
 
 def attempt_snapshot(job, profile, key, state, detail, status=None, elapsed=0, raw=b'', overflow=False, error=''):
     body, truncated = safe_body(raw, (key,), overflow)

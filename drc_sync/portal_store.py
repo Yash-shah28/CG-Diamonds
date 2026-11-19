@@ -6,6 +6,7 @@ import time
 import uuid
 from decimal import Decimal, InvalidOperation
 from .core import Store, WorkbookValidationError
+from .contract import PULL_FEED_VERSION
 from .rates import apply_website_rate, rate_config
 from .responses import redact_text
 from . import portal_secrets
@@ -30,12 +31,49 @@ class PortalStore(Store):
         CREATE TABLE IF NOT EXISTS portal_mail_requests(client_id TEXT PRIMARY KEY,state TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS portal_history(id INTEGER PRIMARY KEY,created REAL NOT NULL,client_id TEXT NOT NULL,name TEXT NOT NULL,event TEXT NOT NULL,state TEXT NOT NULL,records INTEGER NOT NULL DEFAULT 0,detail TEXT NOT NULL);
         ''')
+        self._migrate_pull_feed()
         if recover:
             self.db.execute("UPDATE portal_mail_requests SET state='review' WHERE state='sending'")
             # Publication is revision-idempotent; email delivery is not.
             self.db.execute("UPDATE portal_jobs SET state='pending' WHERE state='publishing'")
             self.db.execute("UPDATE portal_companies SET last_email='Needs review - send interrupted; verify before resending' WHERE last_email='Sending'")
         self.db.commit()
+
+    def _migrate_pull_feed(self):
+        with self.db:
+            marker = self.db.execute(
+                'INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)',
+                (f'portal.feed-format.{PULL_FEED_VERSION}', 'true'),
+            )
+            if not marker.rowcount:
+                return
+            detail = 'Workbook API format changed. Revalidate the connected workbooks to publish again.'
+            self.db.execute(
+                '''UPDATE portal_companies SET status=? WHERE id IN (
+                       SELECT j.client_id FROM portal_jobs j JOIN portal_companies c
+                       ON j.client_id=c.id AND j.revision=c.revision
+                       WHERE j.action='publish' AND j.state IN ('pending','publishing'))''',
+                (detail,),
+            )
+            self.db.execute(
+                "UPDATE portal_jobs SET state='superseded',detail=? "
+                "WHERE action='publish' AND state IN ('pending','publishing')",
+                (detail,),
+            )
+            mail_detail = 'Sender changed to Yahoo Mail. Review the invitation before publishing again.'
+            self.db.execute(
+                '''INSERT INTO portal_history(created,client_id,name,event,state,detail)
+                   SELECT ?,c.id,c.name,'Email','Needs review',?
+                   FROM portal_companies c JOIN portal_mail_requests m ON m.client_id=c.id
+                   WHERE m.state='waiting' ''',
+                (time.time(), mail_detail),
+            )
+            self.db.execute(
+                "UPDATE portal_companies SET last_email=? WHERE id IN "
+                "(SELECT client_id FROM portal_mail_requests WHERE state='waiting')",
+                (mail_detail,),
+            )
+            self.db.execute("UPDATE portal_mail_requests SET state='review' WHERE state='waiting'")
 
     def save_auth_audits(self, entries):
         import re
@@ -106,8 +144,11 @@ class PortalStore(Store):
             cached_profile = json.loads(row['profile'])
             if current is None or any(current.get(k) != cached_profile.get(k) for k in ('id','path','sheet','mapping','required','numeric','decimal_fields','request_format')):
                 raise WorkbookValidationError(f'{kind}: the Excel connection changed. Publish inventory again to validate the current file.')
+            cached_payload = json.loads(row['payload'])
+            if cached_payload.get('format_version') != PULL_FEED_VERSION:
+                raise WorkbookValidationError(f'{kind}: revalidate the connected workbook to prepare the new API format.')
             target_list = natural if kind == 'Natural' else lab_grown
-            for number, original in enumerate(json.loads(row['payload'])['diamonds'],2):
+            for number, original in enumerate(cached_payload['diamonds'],2):
                 record = dict(original); record['Diamond Type'] = API_TYPES[kind]
                 stock = record.get('StockId')
                 if stock is None or not str(stock).strip():
@@ -122,7 +163,7 @@ class PortalStore(Store):
                 except (ValueError,InvalidOperation):
                     raise WorkbookValidationError(f'{kind}, row {number}, PricePerCarat: enter a positive finite price per carat.') from None
                 target_list.append(record)
-        return apply_website_rate({'natural':natural,'lab_grown':lab_grown},{'client':{'mode':company['mode'],'percent':company['percent']}},'client')
+        return apply_website_rate({'natural':natural,'lab_grown':lab_grown},{'client':{'mode':company['mode'],'percent':company['percent']}}, 'client', truncate=True)
 
     def queue(self, client_id, action='publish', force=False):
         company = self.company(client_id)

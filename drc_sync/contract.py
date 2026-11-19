@@ -33,7 +33,7 @@ Certificate Comment|Certificate Comment;Report Comment;Cert comment
 Certificate Image|Certificate Image;Cert Link;Cert URL
 Laser Inscription|Laser Inscription;Inscription
 Video|Video;Video Link;360 Video;Diamond Video;VideoURL
-Image 1|Image;Image 1;Photo;Diamond Image 1
+Image 1|Image;Image 1;Photo;Diamond Image;Diamond Image 1
 Image 2|Image 2;Photo 2;Diamond Image 2
 Image 3|Image 3;Photo 3;Diamond Image 3
 Image 4|Image 4;Photo 4;Diamond Image 4
@@ -76,6 +76,8 @@ Country of Polishing|Country of Polishing;Polished In
 Category|Category'''
 ALIASES = {key: tuple(aliases.split(';')) for key, aliases in (line.split('|') for line in HEADER_SPEC.splitlines())}
 FIELDS = tuple(ALIASES)
+PULL_FEED_VERSION = 2
+IMAGE_FIELDS = frozenset(('Image', *(f'Image {index}' for index in range(1, 7))))
 SAMPLE_FIELDS = ('StockId', 'Shape', 'Weight', 'Color', 'Clarity', 'PricePerCarat')
 REQUIRED_FIELDS = ('StockId', 'Shape', 'Weight', 'PricePerCarat')
 LEGACY = dict(zip(('stock_id', 'shape', 'carat', 'color', 'clarity', 'price_per_carat'), SAMPLE_FIELDS))

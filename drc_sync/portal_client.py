@@ -24,7 +24,7 @@ class PortalClient:
     def __init__(self, settings, token=None, http=None):
         self.base=clean_base(settings.get('base_url',DEFAULT_BASE))
         self.token=token if token is not None else portal_secrets.get_secret(portal_secrets.hosting_slot(self.base))
-        if not self.token:raise HostingError('Hosting is not configured. Open API Access > Hosting & Google setup.')
+        if not self.token:raise HostingError('Hosting is not configured. Open API Access > Settings > Private Hosting.')
         self.http=http or httpx.Client(timeout=httpx.Timeout(60,connect=15),follow_redirects=False)
         self.owned=http is None
 
@@ -35,7 +35,7 @@ class PortalClient:
         try:
             headers={'Authorization':'Bearer '+self.token}
             r=self.http.get(self.base+'/api/v1/admin',headers=headers) if payload is None else self.http.post(self.base+'/api/v1/admin',json=payload,headers=headers)
-            if r.status_code==401:raise HostingError('Hosting authorization failed. Check the admin credential in Hosting & Google setup.')
+            if r.status_code==401:raise HostingError('Hosting authorization failed. Check the admin credential in Private Hosting settings.')
             if r.status_code==503:raise HostingError('Inventory hosting is not ready. Configure the private inventory Blob store and admin credential on Vercel.')
             if r.status_code==409:raise HostingError('A newer feed or access change is already active; this job will not overwrite it.',False)
             if not 200<=r.status_code<300:raise HostingError('Hosting request failed (HTTP '+str(r.status_code)+').',r.status_code>=500 or r.status_code in (408,429))

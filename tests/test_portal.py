@@ -16,7 +16,9 @@ def prepared(tmp_path):
         p=new_profile();p.update(id=kind,kind=kind,path=str(tmp_path/(kind+'.xlsx')),sheet='Stock',enabled=True,mapping={'Stock #':'StockId','Weight':'Weight','Shape':'Shape','Color':'Color','Clarity':'Clarity','PPC':'PricePerCarat'})
         w=Workbook();s=w.active;s.title='Stock';s.append(['Stock #','Weight','Shape','Color','Clarity','PPC']);s.append(['A1',1.01,'Round','D','VVS1','100']);w.save(p['path']);profiles.append(p)
     store.set('profiles',profiles)
-    for p in profiles:store.cache(p,parse_excel(p))
+    worker = PullWorker(tmp_path/'portal.db')
+    for p in profiles:
+        store.cache(p, worker.parse_profile(p))
     yield store,profiles
     store.db.close()
 
@@ -130,3 +132,142 @@ def test_storage_failure_pauses_instead_of_losing_unknown_outcome(prepared,monke
     monkeypatch.setattr(worker,'process_jobs',lambda store:(_ for _ in ()).throw(OSError('cg_admin_DO_NOT_SHOW')))
     worker.pump(s)
     assert worker.paused and len(messages)==1 and 'OSError' in messages[0] and 'DO_NOT_SHOW' not in messages[0]
+
+
+
+def test_pull_inventory_formats_both_workbooks_and_company_rate(tmp_path):
+    from openpyxl import Workbook
+
+    store = PortalStore(tmp_path/'inventory.db')
+    worker = PullWorker(tmp_path/'inventory.db')
+    profiles = []
+    for kind in ('Natural', 'Lab Grown'):
+        path = tmp_path/f'{kind}.xlsx'
+        profile = new_profile()
+        profile.update(id=kind, kind=kind, path=str(path), sheet='Stock', mapping={
+            'Stock #': 'StockId', 'Weight': 'Weight', 'Shape': 'Shape', 'PPC': 'PricePerCarat',
+            'Color': 'Color', 'Clarity': 'Clarity', 'Discount': 'Discount', 'Depth %': 'Depth %',
+            'Table %': 'Table', 'Report #': 'Certificate #', 'Photo 2': 'Image 2',
+            'Cert Link': 'Certificate Image',
+        })
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = 'Stock'
+        sheet.append([*profile['mapping'], 'Diamond Image', 'Diamond Image 3'])
+        depth, table = (61.9, 58) if kind == 'Natural' else (0.595, 0.64)
+        sheet.append(['0001', 1.259, 'Oval', 100.239, None, ' ', -12.3456, depth, table, '00089',
+                      'https://example.com/a.jpg', 'https://example.com/report.pdf',
+                      'https://example.com/a.jpg', 'https://example.com/b.jpg'])
+        sheet.append(['0002', 1, 'Round', 120, None, None, 0, depth, table, 812])
+        if kind == 'Lab Grown':
+            for row in (2, 3):
+                for column in (8, 9):
+                    sheet.cell(row, column).number_format = '0.00%'
+        workbook.save(path)
+        store.cache(profile, worker.parse_profile(profile))
+        profiles.append(profile)
+
+    store.set('profiles', profiles)
+    customer = add(store, ['Natural', 'Lab Grown'], mode='increase', percent='10')
+    store.queue(customer)
+    feed = json.loads(store.pending()['payload'])
+    assert set(feed) == {'natural', 'lab_grown'}
+    for kind, measurements in (('natural', ('61.90', '58.00')), ('lab_grown', ('59.50', '64.00'))):
+        stone, second = feed[kind]
+        assert (stone['Depth %'], stone['Table']) == measurements
+        assert stone['PricePerCarat'] == '110.26'
+        assert stone['Weight'] == '1.25' and stone['Discount'] == '-12.34'
+        assert stone['StockId'] == '0001' and stone['Certificate #'] == '00089'
+        assert stone['Color'] == stone['Clarity'] == ''
+        assert stone['Certificate Image'] == 'https://example.com/report.pdf'
+        assert stone['Image'] == ['https://example.com/a.jpg', 'https://example.com/b.jpg']
+        assert 'Image 2' not in stone and 'Country of Polishing' not in stone
+        assert second['Image'] == [] and second['Certificate #'] == '812'
+        assert second['Weight'] == '1.00' and second['Discount'] == '0.00'
+    store.db.close()
+
+
+def test_blank_required_cell_still_blocks_prepare(prepared):
+    from openpyxl import load_workbook
+
+    store, profiles = prepared
+    profile = profiles[0]
+    workbook = load_workbook(profile['path'])
+    workbook['Stock']['F2'].value = None
+    workbook.save(profile['path'])
+    with pytest.raises(WorkbookValidationError, match='missing PricePerCarat'):
+        PullWorker(store.db.execute('PRAGMA database_list').fetchone()[2]).parse_profile(profile)
+
+
+def test_old_feed_jobs_and_gmail_requests_are_migrated_once(prepared):
+    from drc_sync.contract import PULL_FEED_VERSION
+
+    store, _ = prepared
+    customer = add(store)
+    job_id = store.queue(customer)
+    store.db.execute("UPDATE portal_jobs SET state='publishing' WHERE id=?", (job_id,))
+    store.db.execute("DELETE FROM settings WHERE key=?", (f'portal.feed-format.{PULL_FEED_VERSION}',))
+    row = store.db.execute("SELECT payload FROM portal_cache WHERE kind='Natural'").fetchone()
+    old_payload = json.loads(row['payload'])
+    del old_payload['format_version']
+    store.db.execute("UPDATE portal_cache SET payload=? WHERE kind='Natural'", (json.dumps(old_payload),))
+    store.db.execute("INSERT INTO portal_mail_requests VALUES (?, 'waiting')", (customer,))
+    store.db.commit()
+    db_path = store.db.execute('PRAGMA database_list').fetchone()[2]
+
+    for _ in range(2):
+        with PortalStore(db_path, recover=True).db as connection:
+            assert connection.execute('SELECT state FROM portal_jobs WHERE id=?', (job_id,)).fetchone()[0] == 'superseded'
+            assert connection.execute('SELECT state FROM portal_mail_requests').fetchone()[0] == 'review'
+            assert connection.execute("SELECT COUNT(*) FROM portal_history WHERE state='Needs review'").fetchone()[0] == 1
+        connection.close()
+    with pytest.raises(WorkbookValidationError, match='new API format'):
+        store.compose(store.company(customer))
+
+
+@pytest.mark.parametrize('mail_outcome,history_state', [
+    (None, 'Sent via Yahoo Mail'), ('unknown', 'Needs review'), ('rejected', 'Failure'),
+])
+def test_worker_attempts_yahoo_invitation_only_once(prepared, monkeypatch, mail_outcome, history_state):
+    from drc_sync import pull_worker
+
+    store, _ = prepared
+    customer = add(store)
+    store.queue(customer)
+    store.finish_portal(store.pending(), 'published', 'Hosting confirmed.')
+    company = store.company(customer)
+    store.db.execute("INSERT INTO portal_mail_requests VALUES (?, 'waiting')", (customer,))
+    store.db.commit()
+
+    calls = []
+
+    class Hosting:
+        base = 'https://example.com'
+
+        def __init__(self, _):
+            pass
+
+        def status(self, client_id):
+            assert client_id == customer
+            return {'enabled': True, 'key_hash': company['key_hash'], 'revision': company['revision']}
+
+        def close(self):
+            pass
+
+    def send(company_record, key, url, pdf, *, sender, password):
+        calls.append(company_record['id'])
+        assert (key, sender, password) == ('cg_read_TEST', 'owner@yahoo.com', 'fake-app-password')
+        assert url.endswith('/api/v1/inventory') and pdf.startswith(b'%PDF')
+        if mail_outcome:
+            raise pull_worker.MailError('Yahoo Mail delivery test', uncertain=mail_outcome == 'unknown')
+
+    monkeypatch.setattr(pull_worker, 'PortalClient', Hosting)
+    monkeypatch.setattr(pull_worker.portal_secrets, 'company_key', lambda *_: 'cg_read_TEST')
+    monkeypatch.setattr(pull_worker.portal_secrets, 'get_smtp_credentials',
+                        lambda: ('owner@yahoo.com', 'fake-app-password'))
+    monkeypatch.setattr(pull_worker, 'send_invitation', send)
+    worker = PullWorker(store.db.execute('PRAGMA database_list').fetchone()[2])
+    worker.process_email(store)
+    worker.process_email(store)
+    assert calls == [customer]
+    assert store.db.execute("SELECT state FROM portal_history WHERE event='Email'").fetchone()[0] == history_state

@@ -7,13 +7,15 @@ from PySide6.QtCore import QThread,Signal
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from .core import parse_excel,WorkbookValidationError
-from .contract import FORMAT
+from .contract import FORMAT, REQUIRED_FIELDS
+from .rates import apply_website_rate
 from .portal_store import PortalStore
 from .portal_client import PortalClient,HostingError,DEFAULT_BASE
 from .workbook_errors import workbook_error
 from . import portal_secrets
 from .monitor import Stability
 from .responses import redact_text
+from .yahoo_mail import MailError, send_invitation, test_smtp_auth
 
 class FileEvents(FileSystemEventHandler):
     def __init__(self,queue):self.queue=queue
@@ -26,21 +28,24 @@ class PullWorker(QThread):
     changed=Signal(str);problem=Signal(str,str);prepared=Signal(object,object);inspect_failed=Signal(str)
     response_ready=Signal(int);inspection_problem=Signal(object);diagnostics_ready=Signal(object);sent_to_drc=Signal(str)
     task_done=Signal(str,str);published=Signal(str)
+    smtp_test_done = Signal(str)
     def __init__(self,dbpath):
         super().__init__();self.dbpath=dbpath;self.paused=False;self.manual=False;self.requests=SimpleQueue()
     def request(self,action,value=None):self.requests.put((action,value))
     def parse_profile(self, profile):
         validation = dict(profile)
         if profile.get('request_format') == FORMAT:
-            validation['required'] = sorted(set(profile.get('required', [])) | {'StockId', 'Shape', 'Weight', 'Color', 'Clarity', 'PricePerCarat'})
+            validation['required'] = sorted(set(profile.get('required', [])) | set(REQUIRED_FIELDS))
             validation['identity'] = 'StockId'
-        return parse_excel(validation)
+        return parse_excel(validation, pull_feed=True)
     def prepare_inspection(self,profile):self.request('prepare',profile)
     def send_inspection(self,profile,payload):self.request('legacy-send')
     def process_inspection(self,store,request):
         action,profile,*_=request
         if action=='prepare':
-            try:self.prepared.emit(profile,self.parse_profile(profile))
+            try:
+                payload = apply_website_rate(self.parse_profile(profile), {}, truncate=True)
+                self.prepared.emit(profile, payload)
             except Exception as exc:self.inspect_failed.emit(workbook_error(profile,exc))
         else:self.inspect_failed.emit('Direct DRC requests are disabled. Publish inventory through API Access.')
     def _report(self,store,profile,exc):
@@ -58,13 +63,14 @@ class PullWorker(QThread):
     def _task(self,store,action,value):
         if action=='prepare':self.process_inspection(store,('prepare',value));return
         if action=='legacy-send':self.inspect_failed.emit('Direct DRC requests are disabled. No request sent.');return
-        if action=='google':
-            from .google_mail import connect_google
-            self.task_done.emit(action,'Google sender connected: '+connect_google(value));return
-        if action=='smtp-test':
-            from .google_mail import test_smtp_auth
-            test_smtp_auth(value.get('sender'), value.get('password'))
-            self.task_done.emit(action,'Gmail App Password authenticated successfully.');return
+        if action == 'smtp-test':
+            try:
+                test_smtp_auth(value.get('sender'), value.get('password'))
+            except MailError as exc:
+                self.smtp_test_done.emit(str(exc))
+            else:
+                self.smtp_test_done.emit('Yahoo Mail login verified.')
+            return
         if action=='hosting-test':
             client=PortalClient(store.get('portal_hosting',{}))
             try:client.admin()
@@ -74,8 +80,8 @@ class PullWorker(QThread):
             c=store.company(value)
             if not c['active']:raise ValueError('This company is revoked. Create new access instead.')
             sender, app_pw = portal_secrets.get_smtp_credentials()
-            if not app_pw and not portal_secrets.get_secret('google-credentials'):
-                raise ValueError('Configure your Gmail App Password or connect Google account in Email & Hosting settings before emailing access.')
+            if not sender or not app_pw:
+                raise ValueError('Enter your Yahoo email address and app password in Email & Hosting settings before emailing access.')
             self._validate_company(store,c)
             if action=='rotate':store.rotate(value)
             else:store.queue(value)
@@ -136,8 +142,10 @@ class PullWorker(QThread):
         if c['status']!='Published':return
         client=None;dispatched=False
         try:
-            from .google_mail import send_invitation,MailError,gmail_credentials
             from .integration_guide import guide_pdf
+            sender, password = portal_secrets.get_smtp_credentials()
+            if not sender or not password:
+                raise MailError('Configure Yahoo Mail in Email & Hosting settings before emailing access.')
             client=PortalClient(store.get('portal_hosting',{}))
             remote=client.status(c['id'])
             if not remote.get('enabled') or remote.get('key_hash')!=c['key_hash'] or remote.get('revision')!=c['revision']:
@@ -148,17 +156,18 @@ class PullWorker(QThread):
             store.db.execute("UPDATE portal_companies SET last_email='Sending' WHERE id=?",(c['id'],))
             store.db.execute("UPDATE portal_mail_requests SET state='sending' WHERE client_id=?",(c['id'],));store.db.commit()
             dispatched=True
-            message_id=send_invitation(c,key,api_url,pdf)
-            store.db.execute("UPDATE portal_companies SET last_email='Sent via Gmail' WHERE id=?",(c['id'],))
-            store.history(c['id'],'Email','Sent via Gmail','Gmail accepted the invitation. Inbox delivery is not confirmed.')
-            self.task_done.emit('email-sent','Invitation accepted by Gmail for '+c['email'])
+            send_invitation(c, key, api_url, pdf, sender=sender, password=password)
+            store.db.execute("UPDATE portal_companies SET last_email='Sent via Yahoo Mail' WHERE id=?",(c['id'],))
+            store.history(c['id'],'Email','Sent via Yahoo Mail','Yahoo Mail accepted the invitation. Inbox delivery is not confirmed.')
+            self.task_done.emit('email-sent','Invitation accepted by Yahoo Mail for '+c['email'])
         except Exception as exc:
-            from .google_mail import MailError
-            detail=str(exc) if isinstance(exc,(ValueError,MailError,HostingError)) else 'Email processing failed ('+type(exc).__name__+').'
-            if dispatched and not isinstance(exc,MailError):detail='Email outcome uncertain. Check Gmail Sent mail before resending.'
+            detail=str(exc) if isinstance(exc,(ValueError,HostingError)) else 'Email processing failed ('+type(exc).__name__+').'
+            uncertain = exc.uncertain if isinstance(exc, MailError) else dispatched
+            if uncertain and not isinstance(exc, MailError):
+                detail = 'Email outcome uncertain. Check Yahoo Sent mail before resending.'
             detail=redact_text(detail)
             store.db.execute('UPDATE portal_companies SET last_email=? WHERE id=?',(detail,c['id']))
-            store.history(c['id'],'Email','Needs review' if dispatched else 'Failure',detail)
+            store.history(c['id'],'Email','Needs review' if uncertain else 'Failure',detail)
             self.problem.emit(c['id'],detail)
         finally:
             if client:client.close()

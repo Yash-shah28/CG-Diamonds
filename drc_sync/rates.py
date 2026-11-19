@@ -1,6 +1,6 @@
 """Website-specific outgoing price adjustments. Original workbook data is untouched."""
 from copy import deepcopy
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 
 
 WEBSITES = ({'id': 'drc', 'name': 'DRC'},)
@@ -25,10 +25,10 @@ def rate_config(settings, website='drc'):
     return mode, percent
 
 
-def apply_website_rate(payload, settings, website='drc'):
+def apply_website_rate(payload, settings, website='drc', *, truncate=False):
     mode, percent = rate_config(settings, website)
     adjusted = deepcopy(payload)
-    if not percent:
+    if not percent and not truncate:
         return adjusted
     factor = Decimal(1) + (percent if mode == 'increase' else -percent) / Decimal(100)
     records = []
@@ -44,9 +44,10 @@ def apply_website_rate(payload, settings, website='drc'):
             if isinstance(original, bool): raise ValueError()
             price = Decimal(str(original))
             if not price.is_finite() or price <= 0: raise ValueError()
-            result = (price * factor).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            rounding = ROUND_DOWN if truncate else ROUND_HALF_UP
+            result = (price * factor).quantize(Decimal('0.01'), rounding=rounding)
             if result <= 0: raise ValueError()
         except (KeyError, ValueError, InvalidOperation):
             raise ValueError(f'Record {number}: Price Per Carat cannot be adjusted to a valid positive price.') from None
-        record['PricePerCarat'] = format(result, 'f') if isinstance(original, str) else float(result)
+        record['PricePerCarat'] = format(result, 'f') if truncate or isinstance(original, str) else float(result)
     return adjusted

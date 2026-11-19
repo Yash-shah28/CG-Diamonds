@@ -19,9 +19,8 @@ The public installer store and updater endpoints remain unchanged.
 ## Desktop workflow
 
 1. Keep or connect one Natural and one Lab Grown workbook under Excel Mapping.
-2. Open API Access > Hosting & Google setup. Follow [the setup guide](inventory-service/SETUP.md)
-   to configure private hosting, generate the local admin credential/hash and connect
-   the sender using a Google Cloud Desktop OAuth client with Gmail API enabled.
+2. Open **API Access → Settings**. Follow [the setup guide](inventory-service/SETUP.md)
+   to configure private hosting and enter the Yahoo sender address and generated app password.
 3. Use Publish inventory to validate the initial source data. Excel saves subsequently
    validate and prepare updated feeds. Invalid/empty data retains the last good feed.
 4. Add a company with its email, allowed inventory types and rate. Its unique read-only
@@ -31,7 +30,7 @@ The public installer store and updater endpoints remain unchanged.
    changed in Change Rates; saving immediately republishes from original cached prices.
 6. Rotate keys, revoke access and change inventory scope through API Access. Changes
    remain visibly pending until hosting confirms them. History distinguishes API
-   publication, failures and Gmail acceptance; it never claims a website imported data.
+   publication, failures, and mail server acceptance. Partner import results arrive through feedback.
 
 ## Detailed workbook issues
 

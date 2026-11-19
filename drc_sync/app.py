@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QPushButton, QPlainTextEdit, QLabel, QTabWidget, QLineEdit, QComboBox, QMessageBox,
     QFileDialog, QInputDialog, QSystemTrayIcon, QMenu, QStyle, QDialog,
     QFormLayout, QTableWidget, QTableWidgetItem, QDialogButtonBox, QDoubleSpinBox, QFrame)
-from .core import Store, parse_excel, deliver, save_attempt, attempt_snapshot, ENDPOINT, SERVICE, FormulaResultError
+from .core import Store, deliver, save_attempt, attempt_snapshot, ENDPOINT, SERVICE, FormulaResultError
 from .brand import STYLE, app_icon, brand_pixmap
 from .rates import apply_website_rate, rate_config, RateConfigError
 from .ui import build_ui, nav_icon, configure_table, status_badge
@@ -468,10 +468,10 @@ class Window(QMainWindow):
             chosen, ok = choose_item(self, 'Payload preview', 'Choose inventory profile', labels, 0, False)
             if not ok: return
             profile = profiles[labels.index(chosen)]
-            payload = parse_excel(profile)
+            payload = apply_website_rate(self.worker.parse_profile(profile), {}, truncate=True)
             dialog = QDialog(self); dialog.setWindowTitle('API payload preview — nothing is sent'); dialog.resize(780, 600)
             layout = dialog_layout(dialog)
-            layout.addWidget(QLabel(f"Validated {len(payload['diamonds'])} records. Showing the first 10 records."))
+            layout.addWidget(QLabel(f"Validated {len(payload['diamonds'])} records. Showing the first 10 records before company price adjustments."))
             editor = QPlainTextEdit(json.dumps({'diamonds': payload['diamonds'][:10]}, indent=2, ensure_ascii=False))
             editor.setReadOnly(True); layout.addWidget(editor)
             buttons = QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
@@ -514,7 +514,7 @@ def main():
     if '--portal-self-test' in sys.argv:
         import argparse,tempfile
         from .portal_store import PortalStore
-        from .google_mail import SCOPES
+        from .yahoo_mail import SMTP_HOST
         from .integration_guide import guide_pdf
         parser=argparse.ArgumentParser();parser.add_argument('--portal-self-test',action='store_true');parser.add_argument('--diagnostics-output',required=True);args=parser.parse_args()
         with tempfile.TemporaryDirectory() as directory:
@@ -523,7 +523,7 @@ def main():
             assert test_store.company(company_id)['status']=='Draft'
             test_store.db.close()
         pdf=guide_pdf('https://inventory.example.com/api/v1/inventory',['Natural'])
-        report={'ok':pdf.startswith(b'%PDF'),'offline':True,'requests_sent':0,'mode':'pull-only','legacy_dispatch':False,'google_scope_send_only':SCOPES[-1].endswith('gmail.send'),'pdf_ready':True}
+        report={'ok':pdf.startswith(b'%PDF'),'offline':True,'requests_sent':0,'mode':'pull-only','legacy_dispatch':False,'mail_provider':'Yahoo Mail','smtp_host':SMTP_HOST,'pdf_ready':True}
         Path(args.diagnostics_output).write_text(json.dumps(report,indent=2));return
     if '--diagnose' in sys.argv:
         import argparse

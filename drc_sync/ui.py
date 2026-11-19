@@ -46,7 +46,7 @@ def configure_table(table,row_height=52,select=True):
 
 def status_badge(result):
     r = str(result or '')
-    if r in ('Sent to DRC','Success','Published to API','Sent via Gmail','Accepted') or 'fetch' in r.lower():
+    if r in ('Sent to DRC','Success','Published to API','Sent via Gmail','Sent via Yahoo Mail','Accepted') or 'fetch' in r.lower():
         colors = ('#047857', '#ecfdf5', '#a7f3d0')
     elif r in ('Failure','Missing key','Unknown key','Revoked key','Suspended company'):
         colors = ('#b91c1c', '#fef2f2', '#fecaca')
@@ -202,7 +202,7 @@ def build_ui(w):
     w.rate_rows={};rebuild_rate_rows(w);layout.addWidget(w.rate_table,1);layout.addWidget(label('Add a company in API Access to configure its rate. Previous DRC settings remain stored as legacy data.','muted'));w.pages.addWidget(rates)
     history,layout=page();w.history_page=history
     w.auth_audit_note=label("", "muted");w.auth_audit_note.hide();layout.addWidget(w.auth_audit_note)
-    top=QHBoxLayout();caption=label('Inventory and authentication history','muted');caption.setWordWrap(False);top.addWidget(caption);top.addStretch();w.history_filter=QComboBox();w.history_filter.addItems(['All results','Authentication','Accepted','Missing key','Unknown key','Revoked key','Suspended company','Published to API','Sent via Gmail','Failure','Awaiting retry','Needs review','Revoked','Suspended','Sent to DRC','Blocked']);w.history_filter.currentIndexChanged.connect(w.refresh);top.addWidget(w.history_filter);layout.addLayout(top)
+    top=QHBoxLayout();caption=label('Inventory and authentication history','muted');caption.setWordWrap(False);top.addWidget(caption);top.addStretch();w.history_filter=QComboBox();w.history_filter.addItems(['All results','Authentication','Accepted','Missing key','Unknown key','Revoked key','Suspended company','Published to API','Sent via Yahoo Mail','Sent via Gmail','Failure','Awaiting retry','Needs review','Revoked','Suspended','Sent to DRC','Blocked']);w.history_filter.currentIndexChanged.connect(w.refresh);top.addWidget(w.history_filter);layout.addLayout(top)
     w.history=QTableWidget(0,6);w.history.setHorizontalHeaderLabels(['Date & time','Diamond Type','Status','Results (Diamonds)','Type','Message']);w.history.setEditTriggers(QAbstractItemView.NoEditTriggers);w.history.setSelectionBehavior(QAbstractItemView.SelectRows);w.history.setAlternatingRowColors(True);w.history.setShowGrid(False);w.history.verticalHeader().hide();w.history.verticalHeader().setDefaultSectionSize(44)
     for index,width in enumerate([160,130,140,140,160]):w.history.setColumnWidth(index,width)
     w.history.horizontalHeader().setStretchLastSection(True);w.history.cellDoubleClicked.connect(lambda row,column:w.open_history_response(row));layout.addWidget(w.history,1)

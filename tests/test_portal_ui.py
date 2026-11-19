@@ -115,3 +115,44 @@ def test_activity_summary_and_cell(prepared):
     cell = _make_activity_cell(acc)
     assert cell is not None
     assert '276 Natural' in cell.toolTip()
+
+
+
+def test_yahoo_sender_settings_mask_and_use_the_app_password(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QTabWidget
+    from drc_sync.portal_ui import hosting_settings
+    from drc_sync import portal_secrets, pull_worker
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(Worker, 'start', lambda self: None)
+    window = Window(tmp_path/'yahoo-ui.db')
+    vault = {}
+    auth_attempts = []
+    monkeypatch.setattr(portal_secrets, 'get_secret', vault.get)
+    monkeypatch.setattr(portal_secrets, 'put_secret', vault.__setitem__)
+    monkeypatch.setattr(pull_worker, 'test_smtp_auth', lambda *credentials: auth_attempts.append(credentials))
+    monkeypatch.setattr(window.worker, 'request',
+                        lambda action, value: window.worker._task(window.store, action, value))
+
+    def exercise_settings(dialog):
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs.tabText(0) == 'Yahoo Sender'
+        mail_tab = tabs.widget(0)
+        email, password = mail_tab.findChildren(QLineEdit)
+        assert password.echoMode() == QLineEdit.Password
+        assert not password.text()
+        email.setText('owner@yahoo.com')
+        password.setText('abcd efgh')
+        buttons = {button.text(): button for button in mail_tab.findChildren(QPushButton)}
+        buttons['Save App Password'].click()
+        buttons['Test Connection'].click()
+        assert any(label.text() == 'Yahoo Mail login verified.' for label in mail_tab.findChildren(QLabel))
+        dialog.reject()
+
+    try:
+        monkeypatch.setattr(QDialog, 'exec', exercise_settings)
+        hosting_settings(window)
+        assert auth_attempts == [('owner@yahoo.com', 'abcdefgh')]
+        assert portal_secrets.get_smtp_credentials() == ('owner@yahoo.com', 'abcdefgh')
+    finally:
+        cleanup(window, app)
