@@ -155,8 +155,10 @@ def parse_excel(profile, *, pull_feed=False):
             if all(cell.value is None for cell in row):
                 continue
             record = {}
-            images = []
+            image = ''
             for index, field in mapped_columns:
+                if pull_feed and image and field in IMAGE_FIELDS:
+                    continue
                 column = headers[index]
                 cell = row[index]
                 value = cell.value
@@ -180,8 +182,8 @@ def parse_excel(profile, *, pull_feed=False):
                 if value is not None and not isinstance(value, (str, int, float, bool)):
                     raise WorkbookValidationError(f"Row {number}, column '{column}': unsupported cell type. Use text or a number.")
                 if pull_feed and field in IMAGE_FIELDS:
-                    if isinstance(value, str) and value and value not in images:
-                        images.append(value)
+                    if isinstance(value, str):
+                        image = value
                     continue
                 if value in (None, ''):
                     if pull_feed:
@@ -222,7 +224,7 @@ def parse_excel(profile, *, pull_feed=False):
                     value = str(value)
                 record[field] = value
             if pull_feed:
-                record['Image'] = images
+                record['Image'] = image
             if profile.get('request_format') == FORMAT:
                 expected_type = {'Natural':'NATURAL', 'Lab Grown':'LAB_GROWN'}[profile['kind']]
                 actual_type = record.get('Diamond Type')

@@ -159,8 +159,10 @@ def test_pull_inventory_formats_both_workbooks_and_company_rate(tmp_path):
                       'https://example.com/a.jpg', 'https://example.com/report.pdf',
                       'https://example.com/a.jpg', 'https://example.com/b.jpg'])
         sheet.append(['0002', 1, 'Round', 120, None, None, 0, depth, table, 812])
+        sheet.append(['0003', 1, 'Round', 120, None, None, 0, depth, table, 813,
+                      ' ', None, 'https://example.com/fallback.jpg', 'https://example.com/extra.jpg'])
         if kind == 'Lab Grown':
-            for row in (2, 3):
+            for row in (2, 3, 4):
                 for column in (8, 9):
                     sheet.cell(row, column).number_format = '0.00%'
         workbook.save(path)
@@ -173,16 +175,17 @@ def test_pull_inventory_formats_both_workbooks_and_company_rate(tmp_path):
     feed = json.loads(store.pending()['payload'])
     assert set(feed) == {'natural', 'lab_grown'}
     for kind, measurements in (('natural', ('61.90', '58.00')), ('lab_grown', ('59.50', '64.00'))):
-        stone, second = feed[kind]
+        stone, second, fallback = feed[kind]
         assert (stone['Depth %'], stone['Table']) == measurements
         assert stone['PricePerCarat'] == '110.26'
         assert stone['Weight'] == '1.25' and stone['Discount'] == '-12.34'
         assert stone['StockId'] == '0001' and stone['Certificate #'] == '00089'
         assert stone['Color'] == stone['Clarity'] == ''
         assert stone['Certificate Image'] == 'https://example.com/report.pdf'
-        assert stone['Image'] == ['https://example.com/a.jpg', 'https://example.com/b.jpg']
+        assert stone['Image'] == 'https://example.com/a.jpg'
         assert 'Image 2' not in stone and 'Country of Polishing' not in stone
-        assert second['Image'] == [] and second['Certificate #'] == '812'
+        assert second['Image'] == '' and second['Certificate #'] == '812'
+        assert fallback['Image'] == 'https://example.com/fallback.jpg'
         assert second['Weight'] == '1.00' and second['Discount'] == '0.00'
     store.db.close()
 

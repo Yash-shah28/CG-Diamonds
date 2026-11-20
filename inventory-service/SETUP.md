@@ -54,7 +54,7 @@ in the public installer store. This repository contains no credential values.
 `GET /api/v1/inventory`, header `x-api-key: <company key>`, returns
 `{"natural":[...],"lab_grown":[...]}`. Prices are already adjusted. A response is a full snapshot.
 Numeric values have two decimal places, with Depth and Table on the percentage scale.
-Mapped blank optional cells are empty strings. `Image` contains an array of image URLs.
+Mapped blank optional cells are empty strings. `Image` contains a single image URL or an empty string.
 Use `(Diamond Type, StockId)` as identity when both inventory types are enabled.
 Headers include publication time, snapshot ID and record count. Do not clear stock
 on an HTTP error, incomplete body or invalid JSON. Imported/rejected counts still

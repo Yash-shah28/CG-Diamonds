@@ -101,4 +101,4 @@ def test_pdf_documents_feed_and_uses_a_key_placeholder():
     text = '\n'.join(page.extract_text() for page in pages)
     assert 'YOUR_API_KEY' in text and 'cg_read_' not in text
     assert 'NATURAL' in text and 'LAB_GROWN' in text
-    assert '59.50' in text and '"Image": [' in text and '"Clarity": ""' in text
+    assert '59.50' in text and '"Image": "https://example.com/diamond.jpg"' in text and '"Clarity": ""' in text
