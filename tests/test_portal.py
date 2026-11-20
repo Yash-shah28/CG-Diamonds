@@ -206,7 +206,8 @@ def test_old_feed_jobs_and_gmail_requests_are_migrated_once(prepared):
     customer = add(store)
     job_id = store.queue(customer)
     store.db.execute("UPDATE portal_jobs SET state='publishing' WHERE id=?", (job_id,))
-    store.db.execute("DELETE FROM settings WHERE key=?", (f'portal.feed-format.{PULL_FEED_VERSION}',))
+    store.db.execute("DELETE FROM settings WHERE key IN (?,?)",
+                     ('portal.feed-format.2', f'portal.feed-format.{PULL_FEED_VERSION}'))
     row = store.db.execute("SELECT payload FROM portal_cache WHERE kind='Natural'").fetchone()
     old_payload = json.loads(row['payload'])
     del old_payload['format_version']
@@ -271,3 +272,47 @@ def test_worker_attempts_yahoo_invitation_only_once(prepared, monkeypatch, mail_
     worker.process_email(store)
     assert calls == [customer]
     assert store.db.execute("SELECT state FROM portal_history WHERE event='Email'").fetchone()[0] == history_state
+
+
+
+@pytest.mark.parametrize('kind', ['Natural', 'Lab Grown'])
+def test_rapaport_discount_uses_excel_percentage_scale(prepared, kind):
+    from openpyxl import load_workbook
+
+    store, profiles = prepared
+    profile = next(p for p in profiles if p['kind'] == kind)
+    profile['mapping']['Rapaport Trade Discount %'] = 'Discount'
+    workbook = load_workbook(profile['path'])
+    sheet = workbook['Stock']
+    sheet['G1'] = 'Rapaport Trade Discount %'
+    sheet['G2'] = -0.65
+    sheet['G2'].number_format = '0.00%'
+    sheet.append(['A2', 1.25, 'Oval', None, None, 100, '-65%'])
+    sheet.append(['A3', 1.25, 'Oval', None, None, 100, 65])
+    sheet.append(['A4', 1.25, 'Oval', None, None, 100, None])
+    workbook.save(profile['path'])
+    store.set('profiles', profiles)
+    worker = PullWorker(store.db.execute('PRAGMA database_list').fetchone()[2])
+    store.cache(profile, worker.parse_profile(profile))
+    customer = add(store, [kind])
+    records = store.compose(store.company(customer))['natural' if kind == 'Natural' else 'lab_grown']
+    assert [record['Discount'] for record in records] == ['-65.00', '-65.00', '65.00', '']
+
+
+def test_format_upgrade_keeps_pending_yahoo_invitations(prepared):
+    from drc_sync.contract import PULL_FEED_VERSION
+
+    store, _ = prepared
+    customer = add(store)
+    old_job = store.queue(customer)
+    store.db.execute('DELETE FROM settings WHERE key=?', (f'portal.feed-format.{PULL_FEED_VERSION}',))
+    store.db.execute("INSERT INTO portal_mail_requests VALUES (?, 'waiting')", (customer,))
+    store.db.commit()
+    db_path = store.db.execute('PRAGMA database_list').fetchone()[2]
+
+    reopened = PortalStore(db_path, recover=True)
+    try:
+        assert reopened.db.execute('SELECT state FROM portal_jobs WHERE id=?', (old_job,)).fetchone()[0] == 'superseded'
+        assert reopened.db.execute('SELECT state FROM portal_mail_requests').fetchone()[0] == 'waiting'
+    finally:
+        reopened.db.close()

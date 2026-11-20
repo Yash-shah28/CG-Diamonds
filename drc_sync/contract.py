@@ -76,7 +76,7 @@ Country of Polishing|Country of Polishing;Polished In
 Category|Category'''
 ALIASES = {key: tuple(aliases.split(';')) for key, aliases in (line.split('|') for line in HEADER_SPEC.splitlines())}
 FIELDS = tuple(ALIASES)
-PULL_FEED_VERSION = 2
+PULL_FEED_VERSION = 3
 IMAGE_FIELDS = frozenset(('Image', *(f'Image {index}' for index in range(1, 7))))
 SAMPLE_FIELDS = ('StockId', 'Shape', 'Weight', 'Color', 'Clarity', 'PricePerCarat')
 REQUIRED_FIELDS = ('StockId', 'Shape', 'Weight', 'PricePerCarat')

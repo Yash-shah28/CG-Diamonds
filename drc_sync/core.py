@@ -98,7 +98,7 @@ class Store:
             self.db.execute('INSERT INTO errors(profile,created,detail) VALUES (?,?,?)', (profile,time.time(),detail))
             self.db.commit()
 
-_DEPTH_TABLE_FIELDS = {'Depth %', 'Table'}
+_PERCENTAGE_FIELDS = {'Depth %', 'Table', 'Discount'}
 _NON_NUMERIC_FIELDS = IMAGE_FIELDS | {
     'StockId', 'stock_id', 'Lot #', 'Certificate #', 'Certificate Image', 'Laser Inscription',
     'Diamond Type', 'Status', 'Video', 'Comment', 'Certificate Comment',
@@ -195,11 +195,11 @@ def parse_excel(profile, *, pull_feed=False):
                         if isinstance(value, bool):
                             raise WorkbookValidationError()
                         raw = str(value)
-                        if pull_feed and field in _DEPTH_TABLE_FIELDS and raw.endswith('%'):
+                        if pull_feed and field in _PERCENTAGE_FIELDS and raw.endswith('%'):
                             number_value = Decimal(raw[:-1].strip())
                         else:
                             number_value = Decimal(raw)
-                            if pull_feed and field in _DEPTH_TABLE_FIELDS and type(value) in (int, float):
+                            if pull_feed and field in _PERCENTAGE_FIELDS and type(value) in (int, float):
                                 number_format = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.|_.|\*.', '', cell.number_format or '')
                                 if '%' in number_format:
                                     number_value = number_value.scaleb(2)

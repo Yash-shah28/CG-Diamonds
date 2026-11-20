@@ -60,6 +60,12 @@ class PortalStore(Store):
                 "WHERE action='publish' AND state IN ('pending','publishing')",
                 (detail,),
             )
+            # Version 0.8.6 recorded the Yahoo transition with the format 2 marker.
+            yahoo_migration = self.db.execute(
+                "INSERT OR IGNORE INTO settings(key,value) VALUES ('portal.feed-format.2','true')"
+            )
+            if not yahoo_migration.rowcount:
+                return
             mail_detail = 'Sender changed to Yahoo Mail. Review the invitation before publishing again.'
             self.db.execute(
                 '''INSERT INTO portal_history(created,client_id,name,event,state,detail)
