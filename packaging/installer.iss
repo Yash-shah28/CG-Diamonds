@@ -7,7 +7,7 @@ CreateUninstallRegKey=no
 AppId=Chintamani Gems
 #endif
 AppName=Chintamani Gems
-AppVersion=0.8.9
+AppVersion=0.8.10
 AppPublisher=Chintamani Gems
 AppPublisherURL=https://chintamani-updates.vercel.app/
 AppUpdatesURL=https://chintamani-updates.vercel.app/
@@ -17,7 +17,7 @@ OutputDir=..\release
 #ifdef SmokeTest
 OutputBaseFilename=ChintamaniGemsSetup-Smoke
 #else
-OutputBaseFilename=ChintamaniGemsSetup-0.8.9
+OutputBaseFilename=ChintamaniGemsSetup-0.8.10
 #endif
 SetupIconFile=..\drc_sync\assets\chintamani-gems.ico
 UninstallDisplayIcon={app}\ChintamaniGems.ico

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from xml.dom import minidom
 from zipfile import ZipFile
 
@@ -115,48 +116,38 @@ def test_gia_and_hrd_use_documented_format():
             'Natural', {'Shape': 'Round', 'Weight': '0.93', 'Table': '62'})
 
 
-def test_inventory_window_can_add_edit_and_download(profile, tmp_path, monkeypatch):
+@pytest.mark.parametrize('kind', ['Natural', 'Lab Grown'])
+def test_inventory_window_is_read_only_and_can_download(profile, kind, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QPushButton, QTableView, QWidget
 
     from drc_sync.dashboard import show_workbook_inventory
-    from drc_sync.inventory_edit_ui import InventoryRowDialog
 
     app = QApplication.instance() or QApplication([])
     owner = QWidget()
     exported = tmp_path/'downloaded.xlsx'
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(exported), ''))
-    actions = []
+    profile['kind'] = kind
+    dialogs = []
+
+    def choose_destination(parent, title, filename, filters):
+        assert filename == f'{kind} Inventory.xlsx'
+        return str(exported), filters
 
     def exercise(dialog):
-        if isinstance(dialog, InventoryRowDialog):
-            fields = {column.field: dialog.inputs[column.index]
-                      for column in dialog.columns if column.index in dialog.inputs}
-            if dialog.row_number is None:
-                dialog.lab.setCurrentText('IGI')
-                dialog.number.setText('584354149')
-                for field, value in {'StockId': 'A2', 'Shape': 'Pear', 'Weight': '1.2', 'PricePerCarat': '550'}.items():
-                    fields[field].setText(value)
-                actions.append('add')
-            else:
-                fields['Shape'].setText('Oval')
-                actions.append('edit')
-            dialog.save_button.click()
-            assert dialog.result() == QDialog.Accepted, dialog.status.text()
-            return dialog.result()
-
+        dialogs.append(dialog.windowTitle())
         buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+        assert set(buttons) == {'Download Excel'}
         table = dialog.findChild(QTableView)
-        buttons['Add diamond'].click()
-        assert table.model().rowCount() == 2
-        table.setCurrentIndex(table.model().index(1, 0))
-        buttons['Edit Excel'].click()
-        assert table.model().index(1, 1).data() == 'Oval'
+        assert table.model().rowCount() == 1
+        index = table.model().index(0, 0)
+        assert not table.model().flags(index) & Qt.ItemIsEditable
         buttons['Download Excel'].click()
         return QDialog.Rejected
 
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', choose_destination)
     monkeypatch.setattr(QDialog, 'exec', exercise)
     show_workbook_inventory(owner, profile)
-    assert actions == ['add', 'edit'] and exported.is_file()
+    assert dialogs == [f'{kind} Diamonds']
+    assert exported.read_bytes() == Path(profile['path']).read_bytes()
     owner.deleteLater()
     app.processEvents()
-

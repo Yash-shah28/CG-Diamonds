@@ -39,7 +39,7 @@ def show_workbook_inventory(parent, profile):
     from .contract import suggested_field
     from .core import WorkbookValidationError
     from .workbook_errors import workbook_error
-    from .inventory_edit_ui import edit_inventory, save_excel_copy
+    from .inventory_edit_ui import save_excel_copy
     from .inventory_excel import workbook_stamp
 
     title = f"{profile['kind']} Diamonds"
@@ -93,10 +93,10 @@ def show_workbook_inventory(parent, profile):
 
         if workbook_stamp(profile['path']) != stamp:
             raise WorkbookValidationError('Excel changed while loading the inventory. Try again.')
-        return headers, rows, columns, discount_columns, stamp
+        return headers, rows, columns, discount_columns
 
     try:
-        headers, rows, columns, discount_columns, stamp = read_table()
+        headers, rows, columns, discount_columns = read_table()
     except Exception as exc:
         QMessageBox.warning(parent, title, workbook_error(profile, exc))
         return
@@ -145,8 +145,7 @@ def show_workbook_inventory(parent, profile):
     shortcut.activated.connect(toggle_full_screen)
 
     table = QTableView(dialog)
-    model = InventoryModel(table)
-    table.setModel(model)
+    table.setModel(InventoryModel(table))
     table.setHorizontalScrollMode(QTableView.ScrollPerPixel)
     table.setAlternatingRowColors(True)
     table.setStyleSheet('''
@@ -168,60 +167,18 @@ def show_workbook_inventory(parent, profile):
         'QHeaderView::section { color: #1e293b; background: #f1f5f9; padding: 0 10px; }'
     )
 
-    def size_headers():
-        for index in discount_columns:
-            caption_width = header.fontMetrics().horizontalAdvance(str(headers[index]))
-            table.setColumnWidth(index, max(160, caption_width + 55))
-        row_header.setMinimumWidth(row_header.fontMetrics().horizontalAdvance(str(len(rows) + 1)) + 26)
-
-    def reload_table():
-        nonlocal headers, rows, columns, discount_columns, stamp
-        try:
-            refreshed = read_table()
-        except Exception as exc:
-            QMessageBox.warning(dialog, title, workbook_error(profile, exc))
-            return
-        model.beginResetModel()
-        headers, rows, columns, discount_columns, stamp = refreshed
-        model.endResetModel()
-        size_headers()
-
-    def add_diamond():
-        if edit_inventory(dialog, profile):
-            reload_table()
-
-    def edit_selected():
-        if not table.currentIndex().isValid():
-            return
-        try:
-            changed = workbook_stamp(profile['path']) != stamp
-        except OSError as exc:
-            QMessageBox.warning(dialog, title, workbook_error(profile, exc))
-            return
-        if changed:
-            reload_table()
-            QMessageBox.information(dialog, 'Inventory refreshed', 'Excel changed. Select the row again before editing.')
-            return
-        if edit_inventory(dialog, profile, table.currentIndex().row() + 2, stamp):
-            reload_table()
+    for index in discount_columns:
+        caption_width = header.fontMetrics().horizontalAdvance(str(headers[index]))
+        table.setColumnWidth(index, max(160, caption_width + 55))
+    row_header.setMinimumWidth(row_header.fontMetrics().horizontalAdvance(str(len(rows) + 1)) + 26)
 
     toolbar = QHBoxLayout()
     toolbar.setContentsMargins(12, 6, 12, 6)
-    add_button = QPushButton('Add diamond')
-    add_button.clicked.connect(add_diamond)
-    edit_button = QPushButton('Edit Excel')
-    edit_button.setObjectName('quiet')
-    edit_button.setEnabled(False)
-    edit_button.clicked.connect(edit_selected)
-    table.selectionModel().currentChanged.connect(lambda current, _: edit_button.setEnabled(current.isValid()))
     download_button = QPushButton('Download Excel')
     download_button.setObjectName('quiet')
     download_button.clicked.connect(lambda: save_excel_copy(dialog, profile))
-    toolbar.addWidget(add_button)
-    toolbar.addWidget(edit_button)
     toolbar.addStretch()
     toolbar.addWidget(download_button)
     layout.addLayout(toolbar)
-    size_headers()
     layout.addWidget(table, 1)
     dialog.exec()
