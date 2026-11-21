@@ -20,7 +20,10 @@ from .ui import build_ui, nav_icon, configure_table, status_badge
 from .dialogs import dialog_layout, dialog_buttons, choose_item, MappingField, ColumnLabelDelegate
 from .monitor import Stability
 from .instance import Instance
-from .contract import FIELDS, new_profile, suggested_field
+from .contract import (
+    INVENTORY_MAPPING_FIELDS, has_duplicate_mapping_fields, inventory_mapping_field,
+    new_profile, suggested_field,
+)
 from .responses import response_description, redact_text
 from .diagnostics import failure_detail, run_preflight
 from .workbook_errors import workbook_error
@@ -355,7 +358,9 @@ class Window(QMainWindow):
                 if any('key' in k.lower() for k in p): raise ValueError('Credentials belong in API credentials tab')
                 if not isinstance(p.get('required', []), list) or not isinstance(p.get('numeric', []), list): raise ValueError()
                 if not all(isinstance(k, str) and isinstance(v, str) and k and v for k, v in p['mapping'].items()): raise ValueError()
-                if len(set(p['mapping'].values())) != len(p['mapping']): raise ValueError()
+                if has_duplicate_mapping_fields(p['mapping'], allow_multiple_images=True):
+                    raise ValueError()
+                p['mapping'] = {column: inventory_mapping_field(field) for column, field in p['mapping'].items()}
             self.store.set('profiles', profiles)
             self.update_status('Profiles saved')
             return True
@@ -406,20 +411,31 @@ class Window(QMainWindow):
             note=QLabel('Match your Excel columns to inventory fields. Leave a field blank to skip it.');note.setWordWrap(True);note.setObjectName('muted');form.addWidget(note)
             table=QTableWidget(len(headers),2);table.setObjectName('mappingTable');table.setHorizontalHeaderLabels(['Excel column','API field']);configure_table(table,56,False);table.setColumnWidth(0,240);table.setItemDelegateForColumn(0,ColumnLabelDelegate(table))
             used = set()
+            existing_mapping = existing.get('mapping', {}) if existing else {}
             for index, header in enumerate(headers):
                 table.setItem(index, 0, QTableWidgetItem(str(header or '')))
-                field = QComboBox(); field.setEditable(True); field.lineEdit().setPlaceholderText('Skip column'); field.addItems([''] + list(FIELDS))
-                suggested = (existing.get('mapping', {}).get(str(header).strip()) or suggested_field(header)) if existing else suggested_field(header)
-                if suggested in used: suggested = ''
-                if suggested: used.add(suggested)
-                field.setCurrentText(suggested); table.setCellWidget(index, 1, MappingField(field))
+                field = QComboBox()
+                field.setEditable(True)
+                field.lineEdit().setPlaceholderText('Skip column')
+                field.addItems(['', *INVENTORY_MAPPING_FIELDS])
+                suggested = inventory_mapping_field(existing_mapping.get(str(header).strip()) or suggested_field(header))
+                if suggested in used and suggested != 'Image':
+                    suggested = ''
+                if suggested:
+                    used.add(suggested)
+                field.setCurrentText(suggested)
+                table.setCellWidget(index, 1, MappingField(field))
             table.horizontalHeader().setStretchLastSection(True);form.addWidget(table,1)
             form.addWidget(dialog_buttons(dialog,'Save mapping'))
             if dialog.exec() != QDialog.Accepted: return
             p = dict(existing) if existing else new_profile(); p['path']=path; p['id']=existing['id'] if existing else 'feed-'+str(time.time_ns())
             p['sheet'] = sheet; p['kind'] = kind.currentText()
             p.setdefault('upload_on_save', True)
-            p['mapping'] = {str(headers[i]).strip(): table.cellWidget(i, 1).currentText().strip() for i in range(len(headers)) if table.cellWidget(i, 1).currentText().strip()}
+            p['mapping'] = {}
+            for index, header in enumerate(headers):
+                target = table.cellWidget(index, 1).currentText().strip()
+                if target:
+                    p['mapping'][str(header).strip()] = inventory_mapping_field(target)
             if inventory_kind: profiles = [old for old in profiles if old['kind'] != inventory_kind]
             profiles.append(p); self.editor.setPlainText(json.dumps(profiles,indent=2))
             if persist:
@@ -438,12 +454,14 @@ class Window(QMainWindow):
                 wb = load_workbook(profile['path'], read_only=True, data_only=True)
                 try: headers = next(wb[profile['sheet']].values, ())
                 finally: wb.close()
-                used = set(profile['mapping'].values())
+                mapping = {column: inventory_mapping_field(field) for column, field in profile['mapping'].items()}
+                profile['mapping'] = mapping
+                used = set(mapping.values())
                 for header in headers:
                     column = str(header or '').strip()
-                    target = suggested_field(column)
-                    if column not in profile['mapping'] and target and target not in used:
-                        profile['mapping'][column] = target
+                    target = inventory_mapping_field(suggested_field(column))
+                    if column not in mapping and target and (target == 'Image' or target not in used):
+                        mapping[column] = target
                         used.add(target)
                 profile['confirmed'] = False
             self.editor.setPlainText(json.dumps(profiles, indent=2))

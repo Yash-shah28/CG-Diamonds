@@ -35,13 +35,16 @@ def show_workbook_inventory(parent, profile):
     from openpyxl import load_workbook
     from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
     from PySide6.QtGui import QShortcut
-    from PySide6.QtWidgets import QDialog, QMessageBox, QTableView, QVBoxLayout
+    from PySide6.QtWidgets import QDialog, QHBoxLayout, QMessageBox, QPushButton, QTableView, QVBoxLayout
     from .contract import suggested_field
     from .core import WorkbookValidationError
     from .workbook_errors import workbook_error
+    from .inventory_edit_ui import edit_inventory, save_excel_copy
+    from .inventory_excel import workbook_stamp
 
     title = f"{profile['kind']} Diamonds"
-    try:
+    def read_table():
+        stamp = workbook_stamp(profile['path'])
         workbook = load_workbook(profile['path'], read_only=True, data_only=True)
         try:
             sheet_name = profile['sheet']
@@ -83,14 +86,20 @@ def show_workbook_inventory(parent, profile):
             ]
         finally:
             workbook.close()
+        while rows and all(value is None for value in rows[-1]):
+            rows.pop()
+        columns = max((len(row) for row in rows), default=0)
+        columns = max(columns, len(headers))
+
+        if workbook_stamp(profile['path']) != stamp:
+            raise WorkbookValidationError('Excel changed while loading the inventory. Try again.')
+        return headers, rows, columns, discount_columns, stamp
+
+    try:
+        headers, rows, columns, discount_columns, stamp = read_table()
     except Exception as exc:
         QMessageBox.warning(parent, title, workbook_error(profile, exc))
         return
-
-    while rows and all(value is None for value in rows[-1]):
-        rows.pop()
-    columns = max((len(row) for row in rows), default=0)
-    columns = max(columns, len(headers))
 
     class InventoryModel(QAbstractTableModel):
         def rowCount(self, parent_index=QModelIndex()):
@@ -136,7 +145,8 @@ def show_workbook_inventory(parent, profile):
     shortcut.activated.connect(toggle_full_screen)
 
     table = QTableView(dialog)
-    table.setModel(InventoryModel(table))
+    model = InventoryModel(table)
+    table.setModel(model)
     table.setHorizontalScrollMode(QTableView.ScrollPerPixel)
     table.setAlternatingRowColors(True)
     table.setStyleSheet('''
@@ -153,13 +163,65 @@ def show_workbook_inventory(parent, profile):
     ''')
     header = table.horizontalHeader()
     header.setDefaultSectionSize(160)
-    for index in discount_columns:
-        caption_width = header.fontMetrics().horizontalAdvance(str(headers[index]))
-        table.setColumnWidth(index, max(160, caption_width + 55))
     row_header = table.verticalHeader()
     row_header.setStyleSheet(
         'QHeaderView::section { color: #1e293b; background: #f1f5f9; padding: 0 10px; }'
     )
-    row_header.setMinimumWidth(row_header.fontMetrics().horizontalAdvance(str(len(rows) + 1)) + 26)
-    layout.addWidget(table)
+
+    def size_headers():
+        for index in discount_columns:
+            caption_width = header.fontMetrics().horizontalAdvance(str(headers[index]))
+            table.setColumnWidth(index, max(160, caption_width + 55))
+        row_header.setMinimumWidth(row_header.fontMetrics().horizontalAdvance(str(len(rows) + 1)) + 26)
+
+    def reload_table():
+        nonlocal headers, rows, columns, discount_columns, stamp
+        try:
+            refreshed = read_table()
+        except Exception as exc:
+            QMessageBox.warning(dialog, title, workbook_error(profile, exc))
+            return
+        model.beginResetModel()
+        headers, rows, columns, discount_columns, stamp = refreshed
+        model.endResetModel()
+        size_headers()
+
+    def add_diamond():
+        if edit_inventory(dialog, profile):
+            reload_table()
+
+    def edit_selected():
+        if not table.currentIndex().isValid():
+            return
+        try:
+            changed = workbook_stamp(profile['path']) != stamp
+        except OSError as exc:
+            QMessageBox.warning(dialog, title, workbook_error(profile, exc))
+            return
+        if changed:
+            reload_table()
+            QMessageBox.information(dialog, 'Inventory refreshed', 'Excel changed. Select the row again before editing.')
+            return
+        if edit_inventory(dialog, profile, table.currentIndex().row() + 2, stamp):
+            reload_table()
+
+    toolbar = QHBoxLayout()
+    toolbar.setContentsMargins(12, 6, 12, 6)
+    add_button = QPushButton('Add diamond')
+    add_button.clicked.connect(add_diamond)
+    edit_button = QPushButton('Edit Excel')
+    edit_button.setObjectName('quiet')
+    edit_button.setEnabled(False)
+    edit_button.clicked.connect(edit_selected)
+    table.selectionModel().currentChanged.connect(lambda current, _: edit_button.setEnabled(current.isValid()))
+    download_button = QPushButton('Download Excel')
+    download_button.setObjectName('quiet')
+    download_button.clicked.connect(lambda: save_excel_copy(dialog, profile))
+    toolbar.addWidget(add_button)
+    toolbar.addWidget(edit_button)
+    toolbar.addStretch()
+    toolbar.addWidget(download_button)
+    layout.addLayout(toolbar)
+    size_headers()
+    layout.addWidget(table, 1)
     dialog.exec()

@@ -74,7 +74,7 @@ def test_auto_map_existing_profile_preserves_custom_mapping(tmp_path, monkeypatc
     window=Window(tmp_path/'mapping.db')
     window.editor.setPlainText(json.dumps([p])); window.auto_map()
     edited=json.loads(window.editor.toPlainText())[0]
-    assert edited['mapping']=={'Private Header':'CustomAcceptedField','Stock #':'StockId','PPC':'PricePerCarat','Report No':'Certificate #','Photo 6':'Image 6'}
+    assert edited['mapping']=={'Private Header':'CustomAcceptedField','Stock #':'StockId','PPC':'PricePerCarat','Report No':'Certificate #','Photo 6':'Image'}
     assert window.store.get('profiles',[])==[]
     window.tray.hide(); window.timer.stop(); window.store.db.close()
     window.deleteLater(); app.processEvents()
@@ -269,3 +269,62 @@ def test_mapping_popup_readable_editors_and_grid(tmp_path,monkeypatch):
     monkeypatch.setattr(QDialog,'exec',inspect);w.add_file('Natural')
     assert w.store.get('profiles',[])==[]
     w.tray.hide();w.timer.stop();w.store.db.close();w.deleteLater();app.processEvents()
+
+
+
+def test_mapping_dialog_collapses_numbered_images_and_preserves_fallback(tmp_path, monkeypatch):
+    from openpyxl import Workbook
+    from PySide6.QtWidgets import QComboBox, QDialog, QMessageBox, QTableWidget
+    from drc_sync.contract import new_profile
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(Worker, 'start', lambda self: None)
+    path = tmp_path/'inventory.xlsx'
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = 'Inventory'
+    sheet.append(['Stock #', 'Shape', 'Weight', 'PPC', 'Primary Picture', 'Backup Picture', 'VideoURL'])
+    sheet.append(['ST-01', 'Round', 1, 100, '', 'https://example.com/image.jpg', 'https://example.com/video.mp4'])
+    workbook.save(path)
+
+    window = Window(tmp_path/'image-mapping.db')
+    profile = new_profile()
+    profile.update(path=str(path), sheet='Inventory', mapping={
+        'Stock #': 'StockId', 'Shape': 'Shape', 'Weight': 'Weight', 'PPC': 'PricePerCarat',
+        'Primary Picture': 'Image 1', 'Backup Picture': 'Image 6', 'VideoURL': 'Video',
+    })
+    window.store.set('profiles', [profile])
+    window.reload_profiles()
+    monkeypatch.setattr('drc_sync.app.choose_item', lambda *args: ('Inventory', True))
+    inspected = []
+    warnings = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args[2]))
+
+    def inspect(dialog):
+        table = dialog.findChild(QTableWidget)
+        fields = [table.cellWidget(index, 1).findChild(QComboBox) for index in (4, 5)]
+        for field in fields:
+            choices = [field.itemText(index) for index in range(field.count())]
+            assert choices.count('Image') == 1
+            assert not set(choices) & {f'Image {index}' for index in range(1, 7)}
+            assert 'Video' in choices and 'Certificate Image' in choices
+            assert field.currentText() == 'Image'
+        inspected.append(dialog.windowTitle())
+        return QDialog.Accepted
+
+    try:
+        monkeypatch.setattr(QDialog, 'exec', inspect)
+        window.add_file('Natural', persist=True, edit=True)
+        assert not warnings
+        assert inspected == ['Column mapping']
+        saved, = window.store.get('profiles', [])
+        assert saved['mapping']['Primary Picture'] == saved['mapping']['Backup Picture'] == 'Image'
+        record, = window.worker.parse_profile(saved)['diamonds']
+        assert record['Image'] == 'https://example.com/image.jpg'
+        assert record['Video'] == 'https://example.com/video.mp4'
+    finally:
+        window.timer.stop()
+        window.tray.hide()
+        window.store.db.close()
+        window.deleteLater()
+        app.processEvents()

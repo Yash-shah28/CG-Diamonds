@@ -9,7 +9,10 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN
 import httpx
 from openpyxl import load_workbook
 
-from .contract import ENDPOINT, FORMAT, IMAGE_FIELDS, PULL_FEED_VERSION, migrate_profile, suggested_field
+from .contract import (
+    ENDPOINT, FORMAT, IMAGE_FIELDS, PULL_FEED_VERSION, has_duplicate_mapping_fields,
+    migrate_profile, suggested_field,
+)
 from .responses import MAX_BODY, safe_body, redact_text, queued_acceptance
 from .diagnostics import failure_detail
 from .rates import rate_config, RateConfigError
@@ -124,7 +127,7 @@ def parse_excel(profile, *, pull_feed=False):
         if cached_rows is not None: next(cached_rows, None)
         headers = [str(v).strip() if v is not None else '' for v in headers]
         mapping = profile['mapping']
-        if not mapping or len(set(mapping.values())) != len(mapping):
+        if not mapping or has_duplicate_mapping_fields(mapping, allow_multiple_images=pull_feed):
             raise WorkbookValidationError('Column mapping is empty or assigns multiple Excel columns to the same API field. Correct Excel Mapping.')
         header_map = {h.strip().lower(): h for h in headers if h}
         normalized_mapping = {}

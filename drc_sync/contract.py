@@ -78,12 +78,24 @@ ALIASES = {key: tuple(aliases.split(';')) for key, aliases in (line.split('|') f
 FIELDS = tuple(ALIASES)
 PULL_FEED_VERSION = 4
 IMAGE_FIELDS = frozenset(('Image', *(f'Image {index}' for index in range(1, 7))))
+
+
+def inventory_mapping_field(field):
+    return 'Image' if field in IMAGE_FIELDS else field
+
+
+INVENTORY_MAPPING_FIELDS = tuple(dict.fromkeys(inventory_mapping_field(field) for field in FIELDS))
 SAMPLE_FIELDS = ('StockId', 'Shape', 'Weight', 'Color', 'Clarity', 'PricePerCarat')
 REQUIRED_FIELDS = ('StockId', 'Shape', 'Weight', 'PricePerCarat')
 LEGACY = dict(zip(('stock_id', 'shape', 'carat', 'color', 'clarity', 'price_per_carat'), SAMPLE_FIELDS))
 DECIMAL_FIELDS = ('Final Price', 'Cost Rate', 'Cost Price', 'Discount', 'Depth (mm)', 'Length', 'Width',
                   'L/W Ratio', 'Table', 'Depth %', 'Crown Angle', 'Crown Height', 'Pavilion Angle',
                   'Pavilion Depth', 'Girdle %', 'Star Length')
+
+def has_duplicate_mapping_fields(mapping, *, allow_multiple_images=False):
+    fields = [field for field in mapping.values() if not (allow_multiple_images and field in IMAGE_FIELDS)]
+    return len(set(fields)) != len(fields)
+
 
 def suggested_field(header):
     normalize = lambda value: re.sub(r'[^a-z0-9]', '', str(value).lower().replace('%', 'percent').replace('#', 'number'))
