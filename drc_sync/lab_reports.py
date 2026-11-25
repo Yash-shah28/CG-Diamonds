@@ -47,7 +47,6 @@ _HRD_FIELDS = {
     'Crown Height': 'AdditionalInformation/CrownHeight/CrownHeightPercent',
     'Pavilion Angle': 'AdditionalInformation/PavilionDepth/PavilionAngle',
     'Pavilion Depth': 'AdditionalInformation/PavilionDepth/PavilionDepthPercent',
-    'Certificate Comment': 'Remarks', 'Laser Inscription': 'Inscriptions',
 }
 _NUMERIC = frozenset(('Weight', *_GIA_PROPORTIONS))
 
@@ -126,11 +125,16 @@ def _hrd_result(payload, number):
         raise ReportLookupError('HRD did not return a matching diamond grading report.')
     origin = report.findtext('AdditionalInformation/Origin', '').strip().lower()
     types = ' '.join(node.text or '' for node in report.findall('AvailableReports/*/ReportType')).lower()
-    if any(label in f'{origin} {types}' for label in ('lab grown', 'laboratory grown', 'laboratory-grown', 'synthetic')):
+    if any(label in f'{origin} {types}' for label in ('lab grown', 'lab-grown', 'laboratory grown', 'laboratory-grown', 'synthetic')):
         kind = 'Lab Grown'
     else:
         kind = 'Natural' if 'natural' in f'{origin} {types}' else None
-    return kind, _clean({field: report.findtext(path) for field, path in _HRD_FIELDS.items()})
+    fields = {field: report.findtext(path) for field, path in _HRD_FIELDS.items()}
+    for field, path in (('Certificate Comment', 'Remarks'), ('Laser Inscription', 'Inscriptions')):
+        element = report.find(path)
+        if element is not None:
+            fields[field] = '; '.join(text.strip() for text in element.itertext() if text.strip())
+    return kind, _clean(fields)
 
 
 def lookup_report(lab, number, credentials, *, client=None):

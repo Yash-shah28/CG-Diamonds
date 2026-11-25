@@ -39,7 +39,7 @@ def show_workbook_inventory(parent, profile):
     from .contract import suggested_field
     from .core import WorkbookValidationError
     from .workbook_errors import workbook_error
-    from .inventory_edit_ui import save_excel_copy
+    from .inventory_edit_ui import import_hrd_report, save_excel_copy
     from .inventory_excel import workbook_stamp
 
     title = f"{profile['kind']} Diamonds"
@@ -145,7 +145,8 @@ def show_workbook_inventory(parent, profile):
     shortcut.activated.connect(toggle_full_screen)
 
     table = QTableView(dialog)
-    table.setModel(InventoryModel(table))
+    model = InventoryModel(table)
+    table.setModel(model)
     table.setHorizontalScrollMode(QTableView.ScrollPerPixel)
     table.setAlternatingRowColors(True)
     table.setStyleSheet('''
@@ -172,12 +173,29 @@ def show_workbook_inventory(parent, profile):
         table.setColumnWidth(index, max(160, caption_width + 55))
     row_header.setMinimumWidth(row_header.fontMetrics().horizontalAdvance(str(len(rows) + 1)) + 26)
 
+    def import_report():
+        nonlocal headers, rows, columns, discount_columns
+        if not import_hrd_report(dialog, profile):
+            return
+        try:
+            updated = read_table()
+        except Exception as exc:
+            QMessageBox.warning(dialog, title, workbook_error(profile, exc))
+            return
+        model.beginResetModel()
+        headers, rows, columns, discount_columns = updated
+        model.endResetModel()
+
     toolbar = QHBoxLayout()
     toolbar.setContentsMargins(12, 6, 12, 6)
     download_button = QPushButton('Download Excel')
     download_button.setObjectName('quiet')
     download_button.clicked.connect(lambda: save_excel_copy(dialog, profile))
+    import_button = QPushButton('Import HRD report')
+    import_button.setObjectName('quiet')
+    import_button.clicked.connect(import_report)
     toolbar.addStretch()
+    toolbar.addWidget(import_button)
     toolbar.addWidget(download_button)
     layout.addLayout(toolbar)
     layout.addWidget(table, 1)

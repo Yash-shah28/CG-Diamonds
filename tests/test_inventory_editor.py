@@ -107,21 +107,24 @@ def test_gia_and_hrd_use_documented_format():
         return httpx.Response(200, content=b'''<Report><ReportNumber>250000160172</ReportNumber>
             <Results><Shape><ShapeCode>brilliant</ShapeCode></Shape><Carat>0.93</Carat></Results>
             <AdditionalInformation><Origin>Natural</Origin><TableWidth><TableWidthPercent>62</TableWidthPercent>
-            </TableWidth></AdditionalInformation></Report>''')
+            </TableWidth></AdditionalInformation><Remarks><Remark>First</Remark><Remark>Second</Remark></Remarks>
+            <Inscriptions><Inscription>HRD 250000160172</Inscription></Inscriptions></Report>''')
 
     with httpx.Client(transport=httpx.MockTransport(provider)) as client:
         assert lookup_report('GIA', '3435445806', {'url': 'https://gia.example/report', 'key': 'placeholder'}, client=client) == (
             'Natural', {'Shape': 'Round', 'Weight': '1.21', 'Depth %': '61.90'})
         assert lookup_report('HRD', '250000160172', {'key': 'placeholder'}, client=client) == (
-            'Natural', {'Shape': 'Round', 'Weight': '0.93', 'Table': '62'})
+            'Natural', {'Shape': 'Round', 'Weight': '0.93', 'Table': '62',
+                        'Certificate Comment': 'First; Second', 'Laser Inscription': 'HRD 250000160172'})
 
 
 @pytest.mark.parametrize('kind', ['Natural', 'Lab Grown'])
-def test_inventory_window_is_read_only_and_can_download(profile, kind, tmp_path, monkeypatch):
-    from PySide6.QtCore import Qt
+def test_inventory_window_can_import_hrd_and_download(profile, kind, tmp_path, monkeypatch):
+    from PySide6.QtCore import QEventLoop, Qt, QTimer
     from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QPushButton, QTableView, QWidget
 
     from drc_sync.dashboard import show_workbook_inventory
+    from drc_sync import inventory_edit_ui
 
     app = QApplication.instance() or QApplication([])
     owner = QWidget()
@@ -133,14 +136,42 @@ def test_inventory_window_is_read_only_and_can_download(profile, kind, tmp_path,
         assert filename == f'{kind} Inventory.xlsx'
         return str(exported), filters
 
+    def lookup(lab, number, credentials):
+        assert (lab, number, credentials) == ('HRD', '250000160172', {'key': 'test-token'})
+        return kind, {'Shape': 'Round', 'Weight': '0.93', 'Depth %': '61.4'}
+
+    monkeypatch.setattr(inventory_edit_ui, '_credentials', lambda: {'key': 'test-token'})
+    monkeypatch.setattr(inventory_edit_ui, 'lookup_report', lookup)
+
     def exercise(dialog):
+        if isinstance(dialog, inventory_edit_ui.HrdImportDialog):
+            assert not dialog.save_button.isEnabled()
+            dialog.number.setText('250000160172')
+            dialog.lookup_button.click()
+            assert dialog.request is not None
+            event_loop = QEventLoop()
+            dialog.request.finished.connect(event_loop.quit)
+            QTimer.singleShot(3000, event_loop.quit)
+            event_loop.exec()
+            assert dialog.save_button.isEnabled()
+            for column in dialog.columns:
+                if column.field == 'StockId':
+                    dialog.inputs[column.index].setText('HRD-1')
+                elif column.field == 'PricePerCarat':
+                    dialog.inputs[column.index].setText('210')
+            dialog.save_button.click()
+            assert dialog.result() == QDialog.Accepted, dialog.status.text()
+            return QDialog.Accepted
         dialogs.append(dialog.windowTitle())
         buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
-        assert set(buttons) == {'Download Excel'}
+        assert set(buttons) == {'Import HRD report', 'Download Excel'}
         table = dialog.findChild(QTableView)
         assert table.model().rowCount() == 1
         index = table.model().index(0, 0)
         assert not table.model().flags(index) & Qt.ItemIsEditable
+        buttons['Import HRD report'].click()
+        assert table.model().rowCount() == 2
+        assert table.model().data(table.model().index(1, 0), Qt.DisplayRole) == 'HRD-1'
         buttons['Download Excel'].click()
         return QDialog.Rejected
 
@@ -149,5 +180,13 @@ def test_inventory_window_is_read_only_and_can_download(profile, kind, tmp_path,
     show_workbook_inventory(owner, profile)
     assert dialogs == [f'{kind} Diamonds']
     assert exported.read_bytes() == Path(profile['path']).read_bytes()
+    workbook = load_workbook(profile['path'], data_only=True)
+    try:
+        sheet = workbook['Stock']
+        assert sheet['E3'].value == 'HRD'
+        assert sheet['F3'].value == '250000160172'
+        assert sheet['G3'].value == 0.614
+    finally:
+        workbook.close()
     owner.deleteLater()
     app.processEvents()
