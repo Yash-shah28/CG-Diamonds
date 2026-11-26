@@ -99,6 +99,10 @@ class UpdateController(QObject):
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel); box.button(QMessageBox.Yes).setText('Install and restart')
         if box.exec() != QMessageBox.Yes:
             return
+        rapaport = getattr(self.window, 'rapaport_page', None)
+        if rapaport is not None and rapaport.busy:
+            QMessageBox.information(self.window, 'Rapaport operation in progress', 'Wait for the Rapaport operation to finish, then install the update.')
+            return
         self.installing = True
         self.window.update_button.setText('Waiting for uploads to finish…'); self.window.update_button.setEnabled(False)
         self.window.centralWidget().setEnabled(False)

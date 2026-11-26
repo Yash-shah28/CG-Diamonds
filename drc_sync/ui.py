@@ -31,6 +31,7 @@ def nav_icon(index, color='#334155'):
         '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18m7-13-4 4 4 4"/>',
         '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18m4-13 4 4-4 4"/>',
         '<circle cx="8" cy="9" r="5"/><path d="m12 13 8 8m-2-2 3-3m-6 0 3-3"/>',
+        '<path d="M4 16v4h16v-4M12 16V4m-5 5 5-5 5 5"/>',
     ]
     svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="'+color+'" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'+shapes[index]+'</svg>'
     pixmap=QPixmap(72,72);pixmap.fill(Qt.transparent);painter=QPainter(pixmap);QSvgRenderer(QByteArray(svg.encode())).render(painter);painter.end();pixmap.setDevicePixelRatio(3)
@@ -121,7 +122,7 @@ def build_ui(w):
     identity=QHBoxLayout();identity.setSpacing(9)
     mark=QLabel();mark.setFixedSize(32,32);mark.setPixmap(brand_pixmap().scaled(32,32,Qt.KeepAspectRatio,Qt.SmoothTransformation));identity.addWidget(mark)
     w.sidebar_brand=label('Chintamani Gems','brandName');identity.addWidget(w.sidebar_brand);side.addLayout(identity);side.addSpacing(28)
-    w.page_names=['Dashboard','Excel Mapping','API Access','Change Rates','History'];w.nav_buttons=[];w.nav_group=QButtonGroup(w)
+    w.page_names=['Dashboard','Excel Mapping','API Access','Change Rates','History','Rapaport'];w.nav_buttons=[];w.nav_group=QButtonGroup(w)
     for index,name in enumerate(w.page_names):
         button=QToolButton();button.setObjectName('nav');button.setText(name);button.setToolTip(name);button.setAccessibleName(name);button.setCheckable(True);button.setIconSize(QSize(22,22));button.setMinimumHeight(44);button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         side.addWidget(button);w.nav_buttons.append(button);w.nav_group.addButton(button,index)
@@ -207,6 +208,9 @@ def build_ui(w):
     for index,width in enumerate([160,130,140,140,160]):w.history.setColumnWidth(index,width)
     w.history.horizontalHeader().setStretchLastSection(True);w.history.cellDoubleClicked.connect(lambda row,column:w.open_history_response(row));layout.addWidget(w.history,1)
     bottom=QHBoxLayout();w.audit_older_button=QPushButton('Load older authentication');w.audit_older_button.setEnabled(False);w.audit_older_button.clicked.connect(lambda:__import__('drc_sync.portal_ui',fromlist=['load_older_auth_audits']).load_older_auth_audits(w));bottom.addWidget(w.audit_older_button);bottom.addStretch();button=QPushButton('View response');button.clicked.connect(lambda:w.open_history_response(w.history.currentRow()));bottom.addWidget(button);layout.addLayout(bottom);w.pages.addWidget(history)
+    from .rapaport_ui import RapaportPage
+    w.rapaport_page = RapaportPage(w)
+    w.pages.addWidget(w.rapaport_page)
     configure_table(w.rate_table,88,False);configure_table(w.history,52);w.nav_group.idClicked.connect(w.navigate);w.navigate(0);w.set_sidebar_collapsed(w.store.get('ui.sidebar_collapsed',False),persist=False)
 
 

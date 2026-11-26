@@ -77,7 +77,9 @@ class Window(QMainWindow):
     def navigate(self, index):
         self.pages.setCurrentIndex(index); self.page_title.setText(self.page_names[index])
         for number, button in enumerate(self.nav_buttons):
-            button.setChecked(number == index); button.setIcon(nav_icon([0,1,6,2,3][number], '#1684e8' if number == index else '#334155'))
+            button.setChecked(number == index); button.setIcon(nav_icon([0,1,6,2,3,7][number], '#1684e8' if number == index else '#334155'))
+        if self.pages.currentWidget() is self.rapaport_page:
+            self.rapaport_page.refresh_source()
 
     def set_sidebar_collapsed(self, collapsed, persist=True):
         self.update_button.setToolButtonStyle(Qt.ToolButtonIconOnly if collapsed else Qt.ToolButtonTextBesideIcon)
@@ -517,14 +519,21 @@ class Window(QMainWindow):
         QMessageBox.information(self,'Legacy history','Legacy DRC jobs are read-only and cannot be resent. Publish current inventory through the pull API instead.')
     def closeEvent(self,event):
         if QSystemTrayIcon.isSystemTrayAvailable(): self.hide(); event.ignore()
-        else: self.exit(); event.accept()
+        elif self.exit():
+            event.accept()
+        else:
+            event.ignore()
     def exit(self):
+        if self.rapaport_page.busy:
+            QMessageBox.information(self, 'Rapaport operation in progress', 'Wait for the Rapaport operation to finish before exiting.')
+            return False
         if hasattr(self, 'updater'): self.updater.stop()
         act_w = getattr(self, '_activity_worker', None)
         if act_w and act_w.isRunning():
             act_w.requestInterruption()
             act_w.wait(2000)
         self.worker.requestInterruption(); self.worker.wait(2000); self.tray.hide(); QApplication.quit()
+        return True
 
 def main():
     if '--provision-credentials' in sys.argv or '--credential-self-test' in sys.argv:

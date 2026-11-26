@@ -10,10 +10,10 @@ def cleanup(w,app):
         worker.requestInterruption();worker.wait(500)
     w.tray.hide();w.timer.stop();w.store.db.close();w.deleteLater();app.processEvents()
 
-def test_five_pages_sidebar_and_persistence(tmp_path,monkeypatch):
+def test_sidebar_pages_and_persistence(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]);monkeypatch.setattr(Worker,'start',lambda self:None)
-    w=Window(tmp_path/'ui.db');assert w.pages.count()==5
-    assert w.page_names==['Dashboard','Excel Mapping','API Access','Change Rates','History']
+    w=Window(tmp_path/'ui.db');assert w.pages.count()==6
+    assert w.page_names==['Dashboard','Excel Mapping','API Access','Change Rates','History','Rapaport']
     for i,name in enumerate(w.page_names):w.navigate(i);assert w.page_title.text()==name
     w.set_sidebar_collapsed(True);cleanup(w,app)
     w=Window(tmp_path/'ui.db');assert w.sidebar_collapsed and w.pages.currentIndex()==0;cleanup(w,app)

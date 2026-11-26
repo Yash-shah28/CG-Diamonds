@@ -188,7 +188,7 @@ def test_fixed_type_connection_replaces_only_that_type(tmp_path, monkeypatch):
     assert saved['confirmed'] and saved['success_field'] == 'success'
     assert window.store.db.execute('SELECT filename FROM jobs WHERE id=?', (job,)).fetchone()[0] == str(old)
     assert window.worker.requests.empty()
-    assert window.page_names == ['Dashboard', 'Excel Mapping', 'API Access', 'Change Rates', 'History']
+    assert window.page_names == ['Dashboard', 'Excel Mapping', 'API Access', 'Change Rates', 'History', 'Rapaport']
     window.tray.hide(); window.timer.stop(); window.store.db.close(); window.deleteLater(); app.processEvents()
 
 
