@@ -29,6 +29,7 @@ class PullWorker(QThread):
     response_ready=Signal(int);inspection_problem=Signal(object);diagnostics_ready=Signal(object);sent_to_drc=Signal(str)
     task_done=Signal(str,str);published=Signal(str)
     smtp_test_done = Signal(str)
+    natural_validated = Signal(object)
     def __init__(self,dbpath):
         super().__init__();self.dbpath=dbpath;self.paused=False;self.manual=False;self.requests=SimpleQueue()
     def request(self,action,value=None):self.requests.put((action,value))
@@ -213,6 +214,8 @@ class PullWorker(QThread):
                             errors=store.queue_for_kind(p['kind'])
                             for detail in errors:self.problem.emit(name,detail)
                             self.changed.emit('Workbook validated: '+path.name)
+                            if p['kind'] == 'Natural':
+                                self.natural_validated.emit(p)
                     except Exception as exc:self._report(store,p,exc)
                 if not self.paused and not self.isInterruptionRequested():
                     self.pump(store)

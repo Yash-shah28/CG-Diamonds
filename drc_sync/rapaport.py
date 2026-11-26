@@ -1,5 +1,6 @@
 """Prepare Natural inventory and submit it to Rapaport Trade."""
 import csv
+import re
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 from io import StringIO
@@ -14,6 +15,7 @@ from openpyxl import load_workbook
 from .contract import FORMAT, suggested_field
 from .core import WorkbookValidationError, parse_excel
 from .inventory_excel import workbook_stamp
+from .responses import redact_text
 
 
 TOKEN_URL = 'https://authztoken.api.rapaport.com/api/get'
@@ -42,6 +44,10 @@ CSV_FIELDS = {
 
 class RapaportError(ValueError):
     """A safe, user-facing Rapaport error."""
+
+    def __init__(self, message, *, uncertain=False):
+        super().__init__(message)
+        self.uncertain = uncertain
 
 
 @dataclass(frozen=True)
@@ -112,6 +118,29 @@ def upload_id(value):
         raise RapaportError('Rapaport did not return a valid upload ID.') from None
 
 
+def _http_error(response, action, secrets=(), *, uncertain=False):
+    message = f'Rapaport {action} failed (HTTP {response.status_code}).'
+    for header in ('x-request-id', 'x-correlation-id', 'traceparent', 'cf-ray'):
+        value = response.headers.get(header, '')
+        if re.fullmatch(r'[A-Za-z0-9_.:-]{1,90}', value):
+            message += f' Request ID {redact_text(value, secrets)}.'
+            break
+    if response.headers.get('Content-Type', '').split(';')[0] in ('application/json', 'application/problem+json'):
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            detail = body.get('message') or body.get('detail') or body.get('title')
+            if isinstance(detail, str):
+                detail = re.sub(r'https?://\S+', '[URL]', detail)
+                detail = re.sub(r'eyJ[A-Za-z0-9_.-]+', '[redacted]', detail)
+                message += ' ' + redact_text(' '.join(detail.split()), secrets)[:240]
+    if uncertain:
+        message += ' Check Rapaport Trade Upload History before uploading again.'
+    return RapaportError(message, uncertain=uncertain)
+
+
 def _json_body(response, action):
     try:
         body = response.json()
@@ -142,7 +171,7 @@ class RapaportClient:
         if response.status_code in (400, 401, 403):
             raise RapaportError('Rapaport rejected the credentials. Check the Client ID, Client Secret and account API access.')
         if not response.is_success:
-            raise RapaportError(f'Rapaport login failed (HTTP {response.status_code}).')
+            raise _http_error(response, 'login', tuple(credentials.values()))
         body = _json_body(response, 'login')
         token = body.get('access_token')
         if not isinstance(token, str) or not token or any(ch.isspace() for ch in token):
@@ -162,14 +191,17 @@ class RapaportClient:
             response = http.request(method, url, **kwargs)
         except httpx.RequestError:
             if submitted:
-                raise RapaportError('Upload result is unknown. Check Rapaport Trade Upload History before uploading again.') from None
+                raise RapaportError('Upload result is unknown. Check Rapaport Trade Upload History before uploading again.',
+                                    uncertain=True) from None
             raise RapaportError(f'Could not reach Rapaport for {action}. Check your connection and try again.') from None
         if response.status_code in (401, 403):
             self.clear_token()
             raise RapaportError(f'Rapaport denied {action}. Check that your account has diamond upload access.')
         if not response.is_success:
-            suffix = ' Check Rapaport Trade Upload History before uploading again.' if submitted and response.status_code >= 500 else ''
-            raise RapaportError(f'Rapaport {action} failed (HTTP {response.status_code}).' + suffix)
+            authorization = kwargs.get('headers', {}).get('Authorization', '')
+            credentials = tuple((self._credentials or {}).values())
+            raise _http_error(response, action, (*credentials, authorization.removeprefix('Bearer ')),
+                              uncertain=submitted and response.status_code >= 500)
         return response
 
     def upload(self, http, credentials, prepared):
@@ -187,7 +219,8 @@ class RapaportClient:
         try:
             return upload_id(_json_body(result, 'upload').get('uploadId'))
         except RapaportError:
-            raise RapaportError('Rapaport did not confirm the upload ID. Check Rapaport Trade Upload History before uploading again.') from None
+            raise RapaportError('Rapaport did not confirm the upload ID. Check Rapaport Trade Upload History before uploading again.',
+                                uncertain=True) from None
 
     def _multipart(self, http, headers, content):
         url = LOTS_URL + '/multipart'

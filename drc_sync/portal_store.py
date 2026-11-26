@@ -85,6 +85,7 @@ class PortalStore(Store):
         import re
         from datetime import datetime
         results={'accepted','missing_key','unknown_key','revoked_key','suspended_company'}
+        oldest = None
         for event in entries:
             if not isinstance(event,dict) or event.get('result') not in results: continue
             request_id=event.get('request_id','')
@@ -101,7 +102,9 @@ class PortalStore(Store):
             if cid is None:record['company_name']='Unknown company'
             record.update(request_id=request_id,client_id=cid,key_fingerprint=fingerprint,result=event['result'],http_status=status,time=event['time'])
             self.db.execute('INSERT OR IGNORE INTO portal_auth_audit VALUES (?,?,?)',(request_id,created,encode(record)))
+            oldest = created if oldest is None else min(oldest, created)
         self.db.commit()
+        return oldest
 
     def companies(self):
         return [dict(row) for row in self.db.execute('SELECT * FROM portal_companies ORDER BY name COLLATE NOCASE')]

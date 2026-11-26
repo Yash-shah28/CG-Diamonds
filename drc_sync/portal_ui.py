@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButto
  QTableWidgetItem,QDialog,QFormLayout,QLineEdit,QCheckBox,QMessageBox,QDialogButtonBox,QHeaderView,QTabWidget,QFrame,QAbstractItemView)
 from .portal_client import PortalClient
 from .dialogs import dialog_layout,dialog_buttons
+from .dashboard import history_cutoff
 from .portal_client import DEFAULT_BASE,clean_base
 from . import portal_secrets
 from .yahoo_mail import MailError, validate_credentials
@@ -844,14 +845,15 @@ def start_activity_refresh(w, force=False, audit_cursor=None):
             w.auth_audit_note.setText(page['error']);w.auth_audit_note.show();return
         w.auth_audit_note.hide()
         if not isinstance(page,dict) or not isinstance(page.get('entries'),list):return
-        w.store.save_auth_audits(page['entries'])
-        if audit_cursor or not hasattr(w,'_audit_next_cursor'):
-            w._audit_next_cursor=page.get('next_cursor')
+        oldest = w.store.save_auth_audits(page['entries'])
+        if audit_cursor or not hasattr(w, '_audit_next_cursor'):
+            w._audit_next_cursor = page.get('next_cursor')
+            w._audit_oldest_loaded = oldest
         w.refresh()
     def finished():
-        if hasattr(w,'audit_older_button'):w.audit_older_button.setEnabled(bool(getattr(w,'_audit_next_cursor',None)))
         if getattr(w, '_activity_worker', None) is worker:
             w._activity_worker = None
+        update_audit_paging(w)
         worker.deleteLater()
     w._activity_errors = getattr(w, '_activity_errors', {})
     w._activity_checked = getattr(w, '_activity_checked', set())
@@ -895,11 +897,21 @@ def refresh_companies(w):
         w.clients_table.setCellWidget(i,_COL_ACTIONS,_row_actions(w,c['id']))
     if selected in w.client_ids:w.clients_table.selectRow(w.client_ids.index(selected))
     elif companies:w.clients_table.selectRow(0)
+    update_audit_paging(w)
     start_activity_refresh(w)
 
 
+def update_audit_paging(w):
+    worker = getattr(w, '_activity_worker', None)
+    oldest = getattr(w, '_audit_oldest_loaded', None)
+    can_load = (bool(getattr(w, '_audit_next_cursor', None))
+                and oldest is not None and oldest >= history_cutoff()
+                and not (worker and worker.isRunning()))
+    w.audit_older_button.setEnabled(can_load)
+
+
 def load_older_auth_audits(w):
-    cursor=getattr(w,'_audit_next_cursor',None)
-    if cursor:
-        w._history_limit=getattr(w,'_history_limit',300)+100
-        start_activity_refresh(w,force=True,audit_cursor=cursor)
+    update_audit_paging(w)
+    if w.audit_older_button.isEnabled():
+        w._history_limit = getattr(w, '_history_limit', 300) + 100
+        start_activity_refresh(w, force=True, audit_cursor=w._audit_next_cursor)

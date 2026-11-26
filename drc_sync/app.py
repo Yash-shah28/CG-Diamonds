@@ -64,6 +64,7 @@ class Window(QMainWindow):
         self.worker.inspection_problem.connect(self.inspection_problem)
         self.worker.diagnostics_ready.connect(self.show_diagnostics)
         build_ui(self)
+        self.worker.natural_validated.connect(self.rapaport_page.queue_auto_upload)
         self.tray = QSystemTrayIcon(app_icon(), self)
         self.tray.setToolTip('Chintamani Gems - Inventory Studio')
         menu = QMenu()
@@ -203,11 +204,12 @@ class Window(QMainWindow):
         from .portal_ui import hosting_settings
         hosting_settings(self)
     def refresh(self):
-        from .dashboard import history_entries
+        from .dashboard import history_cutoff, history_entries
         from .portal_ui import refresh_companies, format_access_summary
         profiles=self.store.get('profiles',[])
         companies=self.store.companies()
         comp_by_id={c['id']:c for c in companies}
+        cutoff = history_cutoff()
 
         rows=self.store.db.execute("SELECT j.*,r.body AS response_body,r.status AS response_status,r.filename AS response_filename,r.kind AS response_kind FROM jobs j LEFT JOIN responses r ON r.id=(SELECT MAX(id) FROM responses WHERE job_id=j.id) ORDER BY j.id DESC").fetchall()
         entries=history_entries(rows,profiles)
@@ -234,7 +236,8 @@ class Window(QMainWindow):
             if acc and isinstance(acc,dict) and acc.get('fetch_count') and acc.get('last_fetched_at'):
                 from datetime import datetime
                 try:ts=acc['last_fetched_at'].replace('Z','+00:00');created_sec=datetime.fromisoformat(ts).timestamp()
-                except Exception:created_sec=time.time()
+                except (AttributeError, ValueError, TypeError, OSError, OverflowError):
+                    continue
                 cname=acc.get('company_name') or comp_by_id.get(cid,{}).get('name') or 'Client'
                 nat=acc.get('natural_count',0);lab=acc.get('lab_grown_count',0);tot=acc.get('total_count',nat+lab)
                 if nat and lab:d_type='Natural & Lab Grown'
@@ -244,7 +247,8 @@ class Window(QMainWindow):
                 entries.append(dict(id=None,created=created_sec,diamond_type=d_type,op_type=f"Fetch by {cname}",records=tot,result='Success',detail=f"API download from IP {acc.get('last_ip')} using {acc.get('last_user_agent')}. Delivered: {nat} Natural, {lab} Lab Grown."))
 
         audit_labels={'accepted':'Accepted','missing_key':'Missing key','unknown_key':'Unknown key','revoked_key':'Revoked key','suspended_company':'Suspended company'}
-        for audit_row in self.store.db.execute('SELECT * FROM portal_auth_audit ORDER BY created DESC LIMIT 3000'):
+        audit_sql = 'SELECT * FROM portal_auth_audit WHERE created >= ? ORDER BY created DESC LIMIT 3000'
+        for audit_row in self.store.db.execute(audit_sql, (cutoff,)):
             audit=json.loads(audit_row['payload'])
             cname=audit['company_name'];fingerprint=audit.get('key_fingerprint');key_label=('Key ...'+fingerprint) if fingerprint else 'Missing key'
             status=audit_labels[audit['result']]
@@ -305,7 +309,14 @@ class Window(QMainWindow):
         self.summary.setText('Last publication: '+last('Published to API')+'\nLast failure: '+last('Failure')+'\nWebsite imports are not confirmed by publication. Legacy DRC requests remain read-only.')
         pending=self.store.db.execute("SELECT COUNT(*) FROM portal_jobs WHERE state IN ('pending','publishing')").fetchone()[0]
         self.rate_warning.setText(str(pending)+' publishing/access operation(s) pending. Check API Access setup if hosting is not ready.');self.rate_warning.setVisible(bool(pending))
-        selected=self.history_filter.currentText();visible=[e for e in entries if selected=='All results' or e['result']==selected or (selected=='Authentication' and e.get('op_type','').startswith('Authentication - '))][:getattr(self,'_history_limit',300)]
+        selected = self.history_filter.currentText()
+        visible = [
+            entry for entry in entries
+            if entry['created'] >= cutoff and (
+                selected in ('All results', entry['result'])
+                or (selected == 'Authentication' and entry.get('audit'))
+            )
+        ][:getattr(self, '_history_limit', 300)]
         auth_layout=selected in ('Authentication','Accepted','Missing key','Unknown key','Revoked key','Suspended company')
         if getattr(self,'_history_auth_layout',None)!=auth_layout:
             self._history_auth_layout=auth_layout

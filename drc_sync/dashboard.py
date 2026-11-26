@@ -1,7 +1,12 @@
 """Read-only presentation of sync outcomes; queue acceptance is not import completion."""
 import json
 from pathlib import Path
+import time
 from .responses import queued_acceptance
+
+
+def history_cutoff():
+    return time.time() - 3 * 24 * 60 * 60
 
 
 def result_label(row):

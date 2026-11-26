@@ -1,4 +1,5 @@
 import os,uuid,json
+from datetime import datetime, timedelta, timezone
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from PySide6.QtWidgets import QApplication
 from drc_sync.portal_store import PortalStore
@@ -6,8 +7,9 @@ from drc_sync.app import Window,Worker
 from drc_sync import portal_ui as ui
 
 
-def event(result='revoked_key',company=True):
-    return dict(request_id=str(uuid.uuid4()),time='2026-11-11T05:49:00Z',client_id='a'*32 if company else None,company_name='DRC' if company else 'Untrusted guess',key_fingerprint='abcd12a82f19',result=result,http_status=200 if result=='accepted' else 401,ip='127.0.0.1',user_agent='Mock fetcher',method='GET')
+def event(result='revoked_key',company=True,created=None):
+    created = created or datetime.now(timezone.utc)
+    return dict(request_id=str(uuid.uuid4()),time=created.isoformat(),client_id='a'*32 if company else None,company_name='DRC' if company else 'Untrusted guess',key_fingerprint='abcd12a82f19',result=result,http_status=200 if result=='accepted' else 401,ip='127.0.0.1',user_agent='Mock fetcher',method='GET')
 
 
 def test_audit_persistence_deduplication_and_secret_redaction(tmp_path):
@@ -33,3 +35,51 @@ def test_authentication_history_filters_and_details(tmp_path,monkeypatch):
         w.history_filter.setCurrentText('Missing key');assert w.history.rowCount()==1 and 'Unknown company' in w.history_details[0]
     finally:
         w.timer.stop();w.tray.hide();w.store.db.close();w.deleteLater();app.processEvents()
+
+
+def test_history_only_shows_recent_entries_for_every_source(tmp_path, monkeypatch):
+    from drc_sync import dashboard
+
+    reference = datetime.now(timezone.utc).replace(microsecond=0)
+    cutoff = reference - timedelta(days=3)
+    monkeypatch.setattr(dashboard, 'history_cutoff', lambda: cutoff.timestamp())
+    monkeypatch.setattr(Worker, 'start', lambda self: None)
+    monkeypatch.setattr(ui, 'start_activity_refresh', lambda *args, **kwargs: None)
+    app = QApplication.instance() or QApplication([])
+    w = Window(tmp_path / 'history-window.db')
+    try:
+        cid = w.store.add_company('History test', 'reports@example.com', ['Natural'], secret_writer=lambda *args: None)
+        before_cutoff = cutoff - timedelta(seconds=1)
+        for name, timestamp in (('inside', cutoff), ('outside', before_cutoff)):
+            w.store.history(cid, 'Publish', 'Published to API', f'{name} publication')
+            w.store.error('Natural', f'{name} validation')
+            job = w.store.enqueue(f'{name} profile', {'diamonds': [name]})
+            w.store.db.execute('UPDATE jobs SET created=?, detail=? WHERE id=?',
+                               (timestamp.timestamp(), f'{name} legacy', job))
+            for table, detail in (('portal_history', f'{name} publication'), ('errors', f'{name} validation')):
+                w.store.db.execute(f'UPDATE {table} SET created=? WHERE detail=?', (timestamp.timestamp(), detail))
+        w.store.db.commit()
+
+        recent = event('accepted', created=cutoff)
+        expired = event('accepted', created=before_cutoff)
+        w.store.save_auth_audits([recent, expired])
+        w._access_cache = {
+            'recent': {'company_name': 'Recent fetch', 'fetch_count': 1, 'last_fetched_at': cutoff.isoformat()},
+            'expired': {'company_name': 'Expired fetch', 'fetch_count': 1, 'last_fetched_at': before_cutoff.isoformat()},
+        }
+        w.refresh()
+        details = '\n'.join(w.history_details)
+        assert all(detail in details for detail in ('inside publication', 'inside validation', 'inside legacy', recent['request_id']))
+        assert 'outside' not in details and expired['request_id'] not in details
+        assert any(w.history.item(i, 4).text() == 'Fetch by Recent fetch' for i in range(w.history.rowCount()))
+        assert all(w.history.item(i, 4).text() != 'Fetch by Expired fetch' for i in range(w.history.rowCount()))
+
+        w.history_filter.setCurrentText('Accepted')
+        assert w.history.rowCount() == 1 and recent['request_id'] in w.history_details[0]
+        assert w.store.db.execute('SELECT count(*) FROM portal_auth_audit').fetchone()[0] == 2
+    finally:
+        w.timer.stop()
+        w.tray.hide()
+        w.store.db.close()
+        w.deleteLater()
+        app.processEvents()

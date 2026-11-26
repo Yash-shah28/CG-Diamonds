@@ -186,3 +186,72 @@ def test_rapaport_page_uses_saved_credentials_and_natural_only(natural, tmp_path
     window.deleteLater()
     app.processEvents()
 
+
+
+def test_rapaport_500_identifies_login_and_redacts_credentials():
+    def handler(request):
+        assert str(request.url) == TOKEN_URL
+        return httpx.Response(500, json={'message': 'Unavailable for test-secret'},
+                              headers={'X-Request-ID': 'request-001'})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RapaportError, match='login failed.*HTTP 500.*request-001') as error:
+            RapaportClient().login(client, CREDENTIALS)
+    assert 'test-secret' not in str(error.value)
+    assert not error.value.uncertain
+
+
+def test_automatic_rapaport_upload_stays_natural_and_deduplicates(natural, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from PySide6.QtWidgets import QApplication
+    from drc_sync.app import Window, Worker
+    from drc_sync.rapaport_ui import UPLOAD_SETTING
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(Worker, 'start', lambda self: None)
+    monkeypatch.setattr('drc_sync.rapaport_ui.portal_secrets.get_secret', lambda slot: json.dumps(CREDENTIALS))
+    window = Window(tmp_path / 'rapaport-auto.db')
+    try:
+        page = window.rapaport_page
+        window.store.set('profiles', [natural])
+        page.refresh_source()
+        prepared = prepare_natural_upload(natural)
+        preparation = []
+        dispatch = []
+        monkeypatch.setattr(page, '_start', lambda action, message, operation: preparation.append(action))
+        monkeypatch.setattr(page, '_start_network', lambda action, message, operation: dispatch.append(action))
+
+        window.worker.natural_validated.emit(natural)
+        assert preparation == []
+        page.auto_upload.click()
+        assert preparation == ['auto-prepare']
+        window.worker.natural_validated.emit({**natural, 'kind': 'Lab Grown'})
+        assert preparation == ['auto-prepare']
+
+        page.begin_upload(prepared, automatic=True)
+        assert dispatch == ['upload']
+        assert page.pending_dispatch()['digest']
+        page.begin_upload(prepared, automatic=True)
+        assert dispatch == ['upload']
+
+        page._task = SimpleNamespace(action='upload', error='', result=UPLOAD_ID, deleteLater=lambda: None)
+        page.finish()
+        assert not page.pending_dispatch()
+        page._auto_digest = None
+        window.worker.natural_validated.emit(natural)
+        assert preparation == ['auto-prepare']
+        page.auto_tick()
+        assert dispatch == ['upload', 'status']
+        page._task = SimpleNamespace(action='status', error='', result={'status': 'Finished successfully'},
+                                     deleteLater=lambda: None)
+        page.finish()
+        assert preparation == ['auto-prepare', 'auto-prepare']
+        assert window.store.get(UPLOAD_SETTING, {})['finished']
+        page.begin_upload(prepared, automatic=True)
+        assert dispatch == ['upload', 'status']
+    finally:
+        window.tray.hide()
+        window.timer.stop()
+        window.rapaport_page.auto_timer.stop()
+        window.store.db.close()
+        window.deleteLater()
+        app.processEvents()

@@ -1,4 +1,5 @@
 import os,random
+from datetime import datetime, timedelta, timezone
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from PySide6.QtCore import Signal,QObject,QCoreApplication,QEvent
 from PySide6.QtWidgets import QApplication,QLabel
@@ -65,6 +66,14 @@ def test_completed_poll_can_be_restarted_and_fetch_reaches_dashboard(tmp_path,mo
         QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete)
         ui.load_older_auth_audits(w);assert w._activity_worker is not first
         assert w._activity_worker.audit_cursor=='next-page'
-        second=w._activity_worker;second.running=False;second.finished.emit()
+        second = w._activity_worker
+        expired = event(created=datetime.now(timezone.utc) - timedelta(days=4))
+        second.audit_updated.emit({'entries': [expired], 'next_cursor': 'out-of-range-page'})
+        second.running = False
+        second.finished.emit()
+        assert not w.audit_older_button.isEnabled()
+        ui.load_older_auth_audits(w)
+        assert w._activity_worker is None
+        assert all(expired['request_id'] not in detail for detail in w.history_details)
         w.refresh();assert '270' in w.dashboard_fetch_info.text()
     finally:close(w,app)
