@@ -18,6 +18,7 @@ test('Vercel rewrite keeps the signed update query and the owner request body', 
   assert.equal(ownerRequest(new Request(origin + '/api/owner-runtime?__owner_path=/healthz&__owner_path=/platform/owner'), origin), null);
   const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url)));
   assert(config.rewrites.some(rewrite => rewrite.source === '/owner/:path*'));
+  assert.equal(config.outputDirectory, 'public');
 });
 
 test('the Vercel and desktop key files verify the same Windows release signatures', async () => {
