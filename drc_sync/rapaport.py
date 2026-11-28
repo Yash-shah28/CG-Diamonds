@@ -2,7 +2,7 @@
 import csv
 import re
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from io import StringIO
 from pathlib import Path
 from time import monotonic
@@ -93,11 +93,11 @@ def prepare_natural_upload(profile):
         if not Decimal('0.01') <= Decimal(stone['Weight']) <= Decimal('99'):
             raise WorkbookValidationError(f'Stock {stock} needs a weight from 0.01 to 99 carats for Rapaport.')
 
-        price = Decimal(stone['PricePerCarat'])
-        if price != price.to_integral_value():
-            raise WorkbookValidationError(f'Stock {stock} needs a whole-dollar price per carat for Rapaport.')
+        price = Decimal(stone['PricePerCarat']).to_integral_value(rounding=ROUND_HALF_UP)
+        if price <= 0:
+            raise WorkbookValidationError(f'Stock {stock} needs a price per carat that rounds to at least one dollar for Rapaport.')
         values = {header: stone[field] for field, header in CSV_FIELDS.items() if stone.get(field) not in (None, '')}
-        values['PricePerCarat'] = format(price.to_integral_value(), 'f')
+        values['PricePerCarat'] = format(price, 'f')
         if stone.get('Discount'):
             # The feed uses percentage points. Rapaport's CSV uses a fraction.
             values['RapnetDiscountPercent'] = format(Decimal(stone['Discount']).scaleb(-2), 'f')
