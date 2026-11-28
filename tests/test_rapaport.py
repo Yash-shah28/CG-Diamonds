@@ -96,7 +96,8 @@ def test_rapaport_rejects_lab_grown_and_unmapped_type_column(natural):
         prepare_natural_upload(natural)
 
 
-def test_login_add_update_and_status(natural):
+@pytest.mark.parametrize('replace_all', [False, True])
+def test_rapaport_upload_and_status(natural, replace_all):
     prepared = prepare_natural_upload(natural)
     requests = []
 
@@ -109,7 +110,8 @@ def test_login_add_update_and_status(natural):
         if request.method == 'POST':
             assert str(request.url) == LOTS_URL
             assert request.headers['Content-Type'].startswith('multipart/form-data; boundary=')
-            assert b'name="ReplaceAll"\r\n\r\nfalse' in request.content
+            flag = b'true' if replace_all else b'false'
+            assert b'name="ReplaceAll"\r\n\r\n' + flag + b'\r\n' in request.content
             assert b'name="FirstRowHeaders"\r\n\r\ntrue' in request.content
             assert b'name="File"; filename="Natural-Inventory.csv"' in request.content
             assert prepared.content in request.content
@@ -119,14 +121,15 @@ def test_login_add_update_and_status(natural):
 
     service = RapaportClient()
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        uid = service.upload(client, CREDENTIALS, prepared)
+        uid = service.upload(client, CREDENTIALS, prepared, replace_all=replace_all)
         status = service.status(client, CREDENTIALS, uid)
     assert uid == UPLOAD_ID
     assert status['numValidLots'] == 1
     assert [request.method for request in requests] == ['POST', 'POST', 'GET']
 
 
-def test_multipart_uses_ordered_presigned_parts_without_credentials(monkeypatch, natural):
+@pytest.mark.parametrize('replace_all', [False, True])
+def test_multipart_uses_ordered_presigned_parts_without_credentials(monkeypatch, natural, replace_all):
     prepared = prepare_natural_upload(natural)
     size = 300
     monkeypatch.setattr('drc_sync.rapaport.SINGLE_UPLOAD_LIMIT', size)
@@ -147,7 +150,7 @@ def test_multipart_uses_ordered_presigned_parts_without_credentials(monkeypatch,
         assert request.headers['Authorization'] == 'Bearer temporary-token'
         body = json.loads(request.content)
         if request.method == 'POST':
-            assert body == {'fileName': 'Natural-Inventory.csv', 'replaceAll': False, 'sendEmail': False,
+            assert body == {'fileName': 'Natural-Inventory.csv', 'replaceAll': replace_all, 'sendEmail': False,
                             'diamondFileFormat': 'Rapnet', 'fileSize': len(prepared.content)}
             return httpx.Response(200, json={
                 'uploadId': UPLOAD_ID, 'multipartUploadId': 'session',
@@ -161,7 +164,7 @@ def test_multipart_uses_ordered_presigned_parts_without_credentials(monkeypatch,
         return httpx.Response(200, json={'uploadId': UPLOAD_ID})
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        assert RapaportClient().upload(client, CREDENTIALS, prepared) == UPLOAD_ID
+        assert RapaportClient().upload(client, CREDENTIALS, prepared, replace_all=replace_all) == UPLOAD_ID
     assert b''.join(parts) == prepared.content
 
 
@@ -279,6 +282,24 @@ def test_automatic_rapaport_upload_stays_natural_and_deduplicates(natural, tmp_p
         assert window.store.get(UPLOAD_SETTING, {})['finished']
         page.begin_upload(prepared, automatic=True)
         assert dispatch == ['upload', 'status']
+
+        monkeypatch.setattr(page, 'confirm_auto_replace', lambda: False)
+        page.upload_mode.setCurrentIndex(page.upload_mode.findData(True))
+        assert not page.replace_all()
+        assert page.upload_mode.currentText() == 'Add & Update'
+        assert preparation == ['auto-prepare', 'auto-prepare']
+
+        monkeypatch.setattr(page, 'confirm_auto_replace', lambda: True)
+        page.upload_mode.setCurrentIndex(page.upload_mode.findData(True))
+        assert page.replace_all()
+        assert page.upload_button.text() == 'Replace all Rapaport listings'
+        assert preparation == ['auto-prepare', 'auto-prepare', 'auto-prepare']
+
+        # The same workbook is eligible once when the upload mode changes.
+        page._task = SimpleNamespace(action='auto-prepare', error='', result=prepared, deleteLater=lambda: None)
+        page.finish()
+        assert dispatch == ['upload', 'status', 'upload']
+        assert page.pending_dispatch()['replace_all'] is True
     finally:
         window.tray.hide()
         window.timer.stop()
