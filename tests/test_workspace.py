@@ -53,6 +53,36 @@ def test_workspace_login_password_change_and_migration_excludes_raw_buyer_key(tm
         store.db.close()
 
 
+@pytest.mark.parametrize(('replace_all', 'submission'), [(False, 'upload'), (True, 'replace')])
+def test_hosted_rapaport_dispatches_the_selected_upload_mode(replace_all, submission):
+    content = b'Stock #,Availability,Shape,Weight,PricePerCarat\r\n1,G,Round,1,100\r\n'
+    operations = []
+    request_id = None
+
+    def request(req):
+        nonlocal request_id
+        if req.method == 'PUT':
+            assert req.url.host == 'files.example.test'
+            assert req.content == content
+            return httpx.Response(200)
+        assert req.url.path == '/owner/integrations'
+        data = json.loads(req.content)
+        assert data['provider'] == 'rapaport'
+        assert data['size'] == len(content)
+        operations.append(data['operation'])
+        if data['operation'] == 'prepare':
+            request_id = data['request_id']
+            return httpx.Response(200, json={'upload_url': 'https://files.example.test/inventory.csv'})
+        assert data['request_id'] == request_id
+        assert data['sha256'] == hashlib.sha256(content).hexdigest()
+        return httpx.Response(200, json={'uploadId': 'fixture-upload'})
+
+    with httpx.Client(transport=httpx.MockTransport(request)) as http:
+        with WorkspaceClient('https://owner.example.test', token='fixture', http=http) as client:
+            assert client.upload_rapaport(content, replace_all=replace_all) == 'fixture-upload'
+    assert operations == ['prepare', submission]
+
+
 def test_private_manifest_requires_signature_and_matching_object_key():
     key = Ed25519PrivateKey.generate()
     public = key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)

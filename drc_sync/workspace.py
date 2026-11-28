@@ -169,7 +169,7 @@ class WorkspaceClient:
             'request_id': str(request_id or uuid4()), **inputs,
         })
 
-    def upload_rapaport(self, content):
+    def upload_rapaport(self, content, *, replace_all=False):
         identifier = uuid4()
         prepared = self.integration('rapaport', 'prepare', request_id=identifier, size=len(content))
         url = trusted_signed_url(prepared['upload_url'])
@@ -178,7 +178,8 @@ class WorkspaceClient:
             response.raise_for_status()
         except httpx.HTTPError:
             raise HostingError('Could not stage the Natural inventory for upload.') from None
-        return self.integration('rapaport', 'upload', request_id=identifier, size=len(content),
+        operation = 'replace' if replace_all else 'upload'
+        return self.integration('rapaport', operation, request_id=identifier, size=len(content),
                                 sha256=hashlib.sha256(content).hexdigest())['uploadId']
 
 

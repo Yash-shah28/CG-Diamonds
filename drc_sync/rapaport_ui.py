@@ -1,11 +1,11 @@
-"""Rapaport Trade credentials and manual Natural inventory uploads."""
+"""Rapaport Trade credentials and Natural inventory uploads."""
 import hashlib
 import json
 from pathlib import Path
 
 import httpx
 from PySide6.QtCore import Qt, QThread, QTimer, Slot
-from PySide6.QtWidgets import QCheckBox, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
 from . import portal_secrets
 from .rapaport import RapaportClient, RapaportError, prepare_natural_upload
@@ -20,6 +20,7 @@ from .workbook_errors import workbook_error
 CREDENTIAL_SLOT = 'rapaport-api'
 UPLOAD_SETTING = 'rapaport.last_upload'
 AUTO_SETTING = 'rapaport.auto_account'
+REPLACE_SETTING = 'rapaport.replace_all.'
 
 
 class _Task(QThread):
@@ -85,7 +86,16 @@ class RapaportPage(QWidget):
         self.source = label('', 'fileInfo')
         self.source.setTextFormat(Qt.PlainText)
         inventory_layout.addWidget(self.source)
-        inventory_layout.addWidget(label('Add & Update keeps listings that are missing from this workbook.', 'muted'))
+        self.upload_mode = QComboBox()
+        self.upload_mode.setAccessibleName('Rapaport upload mode')
+        self.upload_mode.addItem('Add & Update', False)
+        self.upload_mode.addItem('Replace All', True)
+        mode_form = QFormLayout()
+        mode_form.addRow('Upload mode', self.upload_mode)
+        inventory_layout.addLayout(mode_form)
+        hint = label('Replace All removes any existing Rapaport listings missing from the Natural workbook.', 'muted')
+        hint.setWordWrap(True)
+        inventory_layout.addWidget(hint)
         self.auto_upload = QCheckBox('Automatically upload the Natural workbook')
         self.auto_upload.setToolTip('Upload the current Natural workbook and later changes while monitoring is active.')
         inventory_layout.addWidget(self.auto_upload)
@@ -122,7 +132,7 @@ class RapaportPage(QWidget):
             self.notice.setText('Could not read Rapaport credentials from Windows Credential Manager.')
         self.client_id.textChanged.connect(self.update_buttons)
         self.client_secret.textChanged.connect(self.update_buttons)
-        self.load_auto_setting()
+        self.upload_mode.currentIndexChanged.connect(self.change_upload_mode)
         self.auto_upload.toggled.connect(self.toggle_auto_upload)
         self.auto_timer = QTimer(self)
         self.auto_timer.setInterval(30000)
@@ -166,18 +176,56 @@ class RapaportPage(QWidget):
         latest = self.last_upload()
         return not self.busy and self.credentials_ready() and (not latest or latest.get('finished', False))
 
-    def load_auto_setting(self):
+    def replace_all(self):
+        return self.store.get(REPLACE_SETTING + self.account_ref(), False) is True
+
+    def auto_enabled(self):
+        return self.store.get(AUTO_SETTING, '') == self.account_ref()
+
+    def load_upload_preferences(self):
+        self.upload_mode.blockSignals(True)
+        self.upload_mode.setCurrentIndex(self.upload_mode.findData(self.replace_all()))
+        self.upload_mode.blockSignals(False)
         self.auto_upload.blockSignals(True)
-        self.auto_upload.setChecked(bool(self.credentials) and self.store.get(AUTO_SETTING, '') == self.account_ref())
+        self.auto_upload.setChecked(self.auto_enabled())
         self.auto_upload.blockSignals(False)
 
-    def toggle_auto_upload(self, enabled):
+    def confirm_auto_replace(self):
+        return QMessageBox.question(
+            self, 'Automatically replace Rapaport listings?',
+            'The current Natural workbook and future changes will replace your Rapaport listings. '
+            'Rapaport removes listings missing from the workbook.',
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+        ) == QMessageBox.Yes
+
+    def change_upload_mode(self, index):
+        replace_all = self.upload_mode.itemData(index) is True
+        account = self.account_ref()
+        if self.auto_enabled() and replace_all and not self.confirm_auto_replace():
+            self.load_upload_preferences()
+            return
         try:
-            self.store.set(AUTO_SETTING, self.account_ref() if enabled else '')
+            self.store.set(REPLACE_SETTING + account, replace_all)
         except Exception:
-            self.load_auto_setting()
+            self.load_upload_preferences()
+            self.notice.setText('Could not save the Rapaport upload mode.')
+            return
+        self.load_upload_preferences()
+        self.update_buttons()
+        self.queue_auto_upload(self.natural_profile())
+
+    def toggle_auto_upload(self, enabled):
+        account = self.account_ref()
+        if enabled and self.replace_all() and not self.confirm_auto_replace():
+            self.load_upload_preferences()
+            return
+        try:
+            self.store.set(AUTO_SETTING, account if enabled else '')
+        except Exception:
+            self.load_upload_preferences()
             self.notice.setText('Could not save the automatic upload setting.')
             return
+        self.load_upload_preferences()
         self._auto_digest = None
         if enabled:
             self.queue_auto_upload(self.natural_profile())
@@ -185,12 +233,12 @@ class RapaportPage(QWidget):
             self._auto_profile = None
 
     def queue_auto_upload(self, profile):
-        if self.auto_upload.isChecked() and profile and profile.get('kind') == 'Natural':
+        if self.auto_enabled() and profile and profile.get('kind') == 'Natural':
             self._auto_profile = profile
             self.drain_auto_upload()
 
     def drain_auto_upload(self):
-        if (not self.auto_upload.isChecked() or self.monitor.paused or self.monitor.isInterruptionRequested()
+        if (not self.auto_enabled() or self.monitor.paused or self.monitor.isInterruptionRequested()
                 or not self.upload_ready() or self.pending_dispatch()):
             return
         profile = self._auto_profile
@@ -201,7 +249,7 @@ class RapaportPage(QWidget):
     def auto_tick(self):
         if self.monitor.isInterruptionRequested():
             return
-        if self.auto_upload.isChecked() and self.credentials_ready() and not self.busy:
+        if self.auto_enabled() and self.credentials_ready() and not self.busy:
             latest = self.last_upload()
             if latest and not latest.get('finished', False):
                 self.check_status()
@@ -214,6 +262,7 @@ class RapaportPage(QWidget):
         if profile:
             description = f"{Path(profile['path']).name}  •  {profile['sheet']}"
         self.source.setText(description)
+        self.load_upload_preferences()
         self.update_buttons()
 
     def update_buttons(self):
@@ -227,6 +276,8 @@ class RapaportPage(QWidget):
         saved = self.credentials_ready()
         self.test_button.setEnabled(enabled and saved)
         self.auto_upload.setEnabled(saved and bool(self.natural_profile()) and enabled)
+        self.upload_mode.setEnabled(enabled and saved)
+        self.upload_button.setText('Replace all Rapaport listings' if self.replace_all() else 'Upload Natural diamonds')
         self.upload_button.setEnabled(self.upload_ready() and bool(self.natural_profile()))
         self.status_button.setEnabled(enabled and saved and bool(upload))
         if upload:
@@ -259,7 +310,7 @@ class RapaportPage(QWidget):
             self._auto_profile = None
             self._auto_digest = None
         self.credentials = credentials
-        self.load_auto_setting()
+        self.load_upload_preferences()
         self.client.clear_token()
         self.client_secret.clear()
         self.client_secret.setPlaceholderText('Client Secret saved')
@@ -312,43 +363,51 @@ class RapaportPage(QWidget):
         self._start('auto-prepare' if automatic else 'prepare', 'Validating the Natural workbook…', prepare)
 
     def _confirm(self, prepared):
-        message = (
-            f"Upload {prepared.records:,} Natural diamonds from {prepared.path.name} to Rapaport Trade?\n\n"
-            "Add & Update will add new listings and update matching stock numbers using the workbook prices."
-        )
+        replace_all = self.replace_all()
+        account = self.account_ref()
+        message = f"Upload {prepared.records:,} Natural diamonds from {prepared.path.name} to Rapaport Trade?\n\n"
+        if replace_all:
+            message += 'Replace All removes every existing listing missing from this workbook.'
+        else:
+            message += 'Add & Update adds new listings and updates matching stock numbers using the workbook prices.'
         box = QMessageBox(self)
-        box.setWindowTitle('Upload Natural diamonds')
+        box.setWindowTitle('Replace all Rapaport listings' if replace_all else 'Upload Natural diamonds')
         box.setTextFormat(Qt.PlainText)
         if self.pending_dispatch():
             message += '\n\nThe previous upload result is unknown. Check Rapaport Trade Upload History before proceeding.'
         box.setText(message)
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
         box.setDefaultButton(QMessageBox.Cancel)
-        box.button(QMessageBox.Yes).setText('Upload to Rapaport')
+        box.button(QMessageBox.Yes).setText('Replace all listings' if replace_all else 'Upload to Rapaport')
         if box.exec() == QMessageBox.Yes:
-            self.begin_upload(prepared)
+            if self.account_ref() != account:
+                self.notice.setText('The Rapaport account changed. Review the upload again.')
+                return
+            self.begin_upload(prepared, replace_all=replace_all)
         else:
             self.notice.setText('Upload canceled.')
 
-    def begin_upload(self, prepared, *, automatic=False):
+    def begin_upload(self, prepared, *, automatic=False, replace_all=False):
         if not self.upload_ready():
             return
         digest = hashlib.sha256(prepared.content).hexdigest()
         if automatic:
-            if (not self.auto_upload.isChecked() or self.monitor.paused or self.monitor.isInterruptionRequested()
-                    or self.pending_dispatch() or digest in (self._auto_digest, self.last_upload().get('digest'))):
+            last = self.last_upload()
+            dispatch = (digest, replace_all)
+            if (not self.auto_enabled() or self.monitor.paused or self.monitor.isInterruptionRequested()
+                    or self.pending_dispatch() or dispatch in (self._auto_digest, (last.get('digest'), last.get('replace_all', False)))):
                 return
-            self._auto_digest = digest
-        self.store.set(self.pending_dispatch_key(), {'digest': digest})
-        message = 'Automatically uploading Natural inventory…' if automatic else 'Submitting the Natural inventory…'
+            self._auto_digest = dispatch
+        self.store.set(self.pending_dispatch_key(), {'digest': digest, 'replace_all': replace_all})
+        message = 'Replacing Rapaport listings…' if replace_all else 'Submitting the Natural inventory…'
         workspace = provider_workspace(self.store, 'rapaport')
         def upload(http, credentials):
             if workspace:
                 if workbook_stamp(prepared.path) != prepared.stamp:
                     raise RapaportError('The Natural workbook changed. Prepare the upload again.')
                 with connection_for(workspace, http) as client:
-                    return client.upload_rapaport(prepared.content)
-            return self.client.upload(http, credentials, prepared)
+                    return client.upload_rapaport(prepared.content, replace_all=replace_all)
+            return self.client.upload(http, credentials, prepared, replace_all=replace_all)
         self._start_network('upload', message, upload)
 
     def check_status(self):
@@ -380,11 +439,12 @@ class RapaportPage(QWidget):
                 self._confirm(task.result)
             elif task.action == 'auto-prepare':
                 self.notice.setText('')
-                self.begin_upload(task.result, automatic=True)
+                self.begin_upload(task.result, automatic=True, replace_all=self.replace_all())
             elif task.action == 'upload':
+                pending = self.pending_dispatch()
                 self.store.set(UPLOAD_SETTING, {
                     'account': self.account_ref(), 'id': task.result,
-                    'digest': self.pending_dispatch().get('digest'),
+                    'digest': pending.get('digest'), 'replace_all': pending.get('replace_all', False),
                     'status': 'Submitted to Rapaport. Check upload status for the result.',
                 })
                 self.store.set(self.pending_dispatch_key(), {})

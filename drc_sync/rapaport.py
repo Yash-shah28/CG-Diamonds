@@ -204,16 +204,18 @@ class RapaportClient:
                               uncertain=submitted and response.status_code >= 500)
         return response
 
-    def upload(self, http, credentials, prepared):
+    def upload(self, http, credentials, prepared, *, replace_all=False):
+        if replace_all and not prepared.records:
+            raise RapaportError('Select a Natural workbook with diamonds before replacing listings.')
         headers = self._headers(http, credentials)
         if prepared.stamp != workbook_stamp(prepared.path):
             raise RapaportError('The Natural workbook changed after review. Prepare the upload again.')
         if len(prepared.content) > SINGLE_UPLOAD_LIMIT:
-            result = self._multipart(http, headers, prepared.content)
+            result = self._multipart(http, headers, prepared.content, replace_all=replace_all)
         else:
             result = self._request(
                 http, 'POST', LOTS_URL, 'upload', submitted=True, headers=headers,
-                data={'DiamondFileFormat': 'Rapnet', 'ReplaceAll': 'false', 'FirstRowHeaders': 'true', 'SendEmail': 'false'},
+                data={'DiamondFileFormat': 'Rapnet', 'ReplaceAll': 'true' if replace_all else 'false', 'FirstRowHeaders': 'true', 'SendEmail': 'false'},
                 files={'File': (FILE_NAME, prepared.content, 'text/csv')},
             )
         try:
@@ -222,10 +224,10 @@ class RapaportClient:
             raise RapaportError('Rapaport did not confirm the upload ID. Check Rapaport Trade Upload History before uploading again.',
                                 uncertain=True) from None
 
-    def _multipart(self, http, headers, content):
+    def _multipart(self, http, headers, content, *, replace_all):
         url = LOTS_URL + '/multipart'
         init = self._request(http, 'POST', url, 'multipart preparation', headers=headers, json={
-            'fileName': FILE_NAME, 'replaceAll': False, 'sendEmail': False,
+            'fileName': FILE_NAME, 'replaceAll': replace_all, 'sendEmail': False,
             'diamondFileFormat': 'Rapnet', 'fileSize': len(content),
         })
         body = _json_body(init, 'multipart preparation')

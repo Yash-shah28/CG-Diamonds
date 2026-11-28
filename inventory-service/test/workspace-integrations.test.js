@@ -36,8 +36,8 @@ test('provider jobs use workspace vault entries and deduplicate successful submi
       throw Error('Unexpected query for isolated provider test');
     },
   };
-  const bytes = Buffer.from('Stock #,Availability,Shape,Weight,PricePerCarat\r\n1,G,Round,1.02,1200\r\n');
-  let uploads = 0;
+  let bytes = Buffer.from('Stock #,Availability,Shape,Weight,PricePerCarat\r\n1,G,Round,1.02,1200\r\n');
+  const uploadModes = [];
   let messages = 0;
   const run = integrations({ pool, encryptionKey, storage: { async bytes() { return bytes; } },
     async fetcher(url, options) {
@@ -45,10 +45,27 @@ test('provider jobs use workspace vault entries and deduplicate successful submi
         assert.deepEqual(JSON.parse(options.body), credentials.rapaport);
         return Response.json({ access_token: 'fixture-access' });
       }
+      if (url === 'https://fixture.s3.amazonaws.com/file?partNumber=1') {
+        assert.equal(options.headers.Authorization, undefined);
+        assert.deepEqual(options.body, bytes);
+        return new Response(null, { headers: { etag: '"fixture-tag"' } });
+      }
       assert.equal(options.headers.Authorization, 'Bearer fixture-access');
-      assert.equal(options.body.get('ReplaceAll'), 'false');
-      assert.equal(await options.body.get('File').text(), bytes.toString());
-      uploads++;
+      if (url.endsWith('/multipart')) {
+        const body = JSON.parse(options.body);
+        if (options.method === 'POST') {
+          assert.equal(body.fileSize, bytes.length);
+          uploadModes.push(String(body.replaceAll));
+          return Response.json({
+            uploadId, multipartUploadId: 'fixture-upload', multipartSplitSize: bytes.length,
+            putUrls: ['https://fixture.s3.amazonaws.com/file?partNumber=1'],
+          });
+        }
+        assert.deepEqual(body.eTags, { 1: 'fixture-tag' });
+      } else {
+        assert.equal(await options.body.get('File').text(), bytes.toString());
+        uploadModes.push(options.body.get('ReplaceAll'));
+      }
       return Response.json({ uploadId });
     },
     transportFactory(value) {
@@ -68,8 +85,24 @@ test('provider jobs use workspace vault entries and deduplicate successful submi
   assert.deepEqual(await run(company, natural), { uploadId });
   assert.deepEqual(await run(company, email), { sent: true });
   assert.deepEqual(await run(company, email), { sent: true });
-  assert.equal(uploads, 1);
+  assert.deepEqual(uploadModes, ['false']);
   assert.equal(messages, 1);
   assert(!JSON.stringify([...jobs.values()]).includes(key));
   await assert.rejects(run({ ...company, features: ['natural'] }, natural), { status: 403 });
+
+  const replace = () => run(company, {
+    ...natural, operation: 'replace', request_id: randomUUID(), size: bytes.length, sha256: hash(bytes),
+  });
+  assert.deepEqual(await replace(), { uploadId });
+  assert.deepEqual(uploadModes, ['false', 'true']);
+
+  const header = Buffer.from('Stock #,Availability,Shape,Weight,PricePerCarat\r\n');
+  bytes = header;
+  await assert.rejects(replace(), { status: 400, message: 'Cannot replace Rapaport listings with an empty inventory' });
+  assert.deepEqual(uploadModes, ['false', 'true']);
+
+  bytes = Buffer.concat([header, Buffer.from('2,G,Round,1.02,1200\r\n'.repeat(260000))]);
+  assert(bytes.length > 5_000_000);
+  assert.deepEqual(await replace(), { uploadId });
+  assert.deepEqual(uploadModes, ['false', 'true', 'true']);
 });

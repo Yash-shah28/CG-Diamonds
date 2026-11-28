@@ -36,13 +36,13 @@ async function rapaportHeaders(fetcher, credentials) {
   return { Authorization: 'Bearer ' + result.access_token, Accept: 'application/json' };
 }
 
-async function rapaportUpload(fetcher, headers, csv) {
+async function rapaportUpload(fetcher, headers, csv, replaceAll) {
   const filename = 'Natural-Inventory.csv';
   if (csv.length <= 5_000_000) {
     const form = new FormData();
     form.set('File', new Blob([csv], { type: 'text/csv' }), filename);
     form.set('DiamondFileFormat', 'Rapnet');
-    form.set('ReplaceAll', 'false');
+    form.set('ReplaceAll', String(replaceAll));
     form.set('FirstRowHeaders', 'true');
     form.set('SendEmail', 'false');
     return json(await upstream(fetcher, RAPAPORT_LOTS, { method: 'POST', headers, body: form }, 'Rapaport upload'));
@@ -51,7 +51,7 @@ async function rapaportUpload(fetcher, headers, csv) {
   const contentHeaders = { ...headers, 'Content-Type': 'application/json' };
   const instructions = await json(await upstream(fetcher, endpoint, {
     method: 'POST', headers: contentHeaders, body: JSON.stringify({
-      fileName: filename, replaceAll: false, sendEmail: false, diamondFileFormat: 'Rapnet', fileSize: csv.length,
+      fileName: filename, replaceAll, sendEmail: false, diamondFileFormat: 'Rapnet', fileSize: csv.length,
     })
   }, 'Rapaport multipart preparation'));
   const { multipartSplitSize: split, multipartUploadId, uploadId, putUrls } = instructions;
@@ -155,7 +155,7 @@ export function integrations({ pool, storage, encryptionKey, fetcher = fetch, tr
     }
 
     let perform;
-    if (provider === 'rapaport' && operation === 'upload') {
+    if (provider === 'rapaport' && ['upload', 'replace'].includes(operation)) {
       if (!Number.isSafeInteger(input.size) || input.size < 1 || input.size > MAX_SNAPSHOT || !/^[a-f0-9]{64}$/.test(input.sha256 || '')) {
         throw new ApiError(400, 'Invalid upload metadata');
       }
@@ -164,9 +164,16 @@ export function integrations({ pool, storage, encryptionKey, fetcher = fetch, tr
           || !csv.subarray(0, 1024).toString('utf8').startsWith('Stock #,Availability,Shape,Weight,')) {
         throw new ApiError(400, 'Natural inventory upload could not be verified');
       }
+      const replaceAll = operation === 'replace';
+      if (replaceAll) {
+        const headerEnd = csv.indexOf(10);
+        if (headerEnd === -1 || !csv.subarray(headerEnd + 1).some(byte => byte > 32 && byte !== 34 && byte !== 44)) {
+          throw new ApiError(400, 'Cannot replace Rapaport listings with an empty inventory');
+        }
+      }
       const headers = await rapaportHeaders(fetcher, credentials);
       perform = async () => {
-        const response = await rapaportUpload(fetcher, headers, csv);
+        const response = await rapaportUpload(fetcher, headers, csv, replaceAll);
         if (!uuid(response.uploadId)) throw new ApiError(502, 'Rapaport did not return an upload ID');
         return { uploadId: response.uploadId };
       };
