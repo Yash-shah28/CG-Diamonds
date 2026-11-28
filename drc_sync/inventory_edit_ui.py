@@ -11,8 +11,9 @@ from PySide6.QtWidgets import (
 from . import portal_secrets
 from .dialogs import dialog_layout
 from .inventory_excel import download_inventory, read_inventory_row, row_values, save_inventory_row
-from .lab_reports import ReportLookupError, lookup_report, report_number
+from .lab_reports import ReportLookupError, _hrd_result, lookup_report, report_number
 from .workbook_errors import workbook_error
+from .workspace import connection_for, provider_workspace
 
 
 _HRD_CREDENTIAL = 'lab-report-hrd'
@@ -65,16 +66,22 @@ def _lookup_settings(parent):
 
 
 class _ReportRequest(QThread):
-    def __init__(self, number, credentials, parent):
+    def __init__(self, number, credentials, parent, workspace=None):
         super().__init__(parent)
         self.number = number
         self.credentials = credentials
+        self.workspace = workspace
         self.result = None
         self.error = ''
 
     def run(self):
         try:
-            self.result = lookup_report('HRD', self.number, self.credentials)
+            if self.workspace:
+                with connection_for(self.workspace) as client:
+                    result = client.integration('hrd', 'lookup', report=self.number)
+                self.result = _hrd_result(result['xml'].encode(), self.number)
+            else:
+                self.result = lookup_report('HRD', self.number, self.credentials)
         except ReportLookupError as error:
             self.error = str(error)
         except Exception:
@@ -87,6 +94,10 @@ class HrdImportDialog(QDialog):
     def __init__(self, parent, profile, stamp, columns, stock_ids):
         super().__init__(parent)
         self.profile = profile
+        parent_widget = parent
+        while parent_widget and not hasattr(parent_widget, 'store'):
+            parent_widget = parent_widget.parentWidget()
+        self.workspace = provider_workspace(parent_widget.store, 'hrd') if parent_widget else None
         self.stamp = stamp
         self.columns = columns
         self.stock_ids = stock_ids
@@ -143,6 +154,7 @@ class HrdImportDialog(QDialog):
         layout.addWidget(buttons)
         self.lookup_button.clicked.connect(self.begin_lookup)
         self.settings_button.clicked.connect(lambda: _lookup_settings(self))
+        self.settings_button.setVisible(not self.workspace)
         if not {'Lab', 'Certificate #'} <= {column.field for column in columns}:
             self.lookup_button.setEnabled(False)
             self.status.setText('This worksheet needs Lab and Report # columns to import an HRD report.')
@@ -152,8 +164,10 @@ class HrdImportDialog(QDialog):
             return
         try:
             number = report_number(self.number.text())
-            credentials = _credentials()
-            if not credentials.get('key'):
+            credentials = {} if self.workspace else _credentials()
+            if self.workspace and 'hrd' not in self.workspace.get('providers', []):
+                raise ReportLookupError('Add the HRD token in Owner workspace.')
+            if not self.workspace and not credentials.get('key'):
                 raise ReportLookupError('Add your HRD API token under HRD token settings first.')
         except ReportLookupError as error:
             self.status.setText(str(error))
@@ -162,7 +176,7 @@ class HrdImportDialog(QDialog):
             self.status.setText('Could not read the HRD API token from Windows Credential Manager.')
             return
 
-        self.request = _ReportRequest(number, credentials, self)
+        self.request = _ReportRequest(number, credentials, self, self.workspace)
         self.request.finished.connect(self.finish_lookup)
         self.status.setText('Fetching HRD report…')
         for widget in (self.number, self.lookup_button, self.settings_button):
@@ -239,4 +253,3 @@ def save_excel_copy(parent, profile):
         download_inventory(profile, path)
     except Exception as error:
         QMessageBox.warning(parent, 'Could not download Excel', workbook_error(profile, error))
-

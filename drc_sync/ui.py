@@ -127,6 +127,12 @@ def build_ui(w):
         button=QToolButton();button.setObjectName('nav');button.setText(name);button.setToolTip(name);button.setAccessibleName(name);button.setCheckable(True);button.setIconSize(QSize(22,22));button.setMinimumHeight(44);button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         side.addWidget(button);w.nav_buttons.append(button);w.nav_group.addButton(button,index)
     side.addStretch()
+    from .workspace_ui import owner_workspace_dialog
+    owner = QPushButton('Owner workspace')
+    owner.setObjectName('quiet')
+    owner.clicked.connect(lambda: owner_workspace_dialog(w))
+    side.addWidget(owner)
+    w.owner_workspace_button = owner
     from .version import VERSION
     w.update_button=QToolButton();w.update_button.setText('Check for updates');w.update_button.setIcon(w.style().standardIcon(QStyle.SP_BrowserReload));w.update_button.setMinimumHeight(38);w.update_button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed);w.update_button.setObjectName('quiet');w.update_button.setToolTip('Chintamani Gems '+VERSION);side.addWidget(w.update_button)
     w.collapse_button=QPushButton('Collapse sidebar');w.collapse_button.setObjectName('quiet');w.collapse_button.clicked.connect(lambda:w.set_sidebar_collapsed(not w.sidebar_collapsed));side.addWidget(w.collapse_button)
@@ -137,11 +143,12 @@ def build_ui(w):
     dashboard,layout=page();w.dashboard_page=dashboard
     row=QHBoxLayout();w.status=label('Active - Waiting for configured Excel files','muted');row.addWidget(w.status,1);w.pause_button=QPushButton('Pause monitoring');w.pause_button.setObjectName('quiet');w.pause_button.clicked.connect(w.pause);row.addWidget(w.pause_button);publish=QPushButton('Publish inventory');publish.clicked.connect(w.sync);row.addWidget(publish);layout.addLayout(row)
     w.rate_warning=label('','error');w.rate_warning.hide();layout.addWidget(w.rate_warning)
-    metrics=QHBoxLayout();metrics.setSpacing(12);w.metric_values={}
+    metrics=QHBoxLayout();metrics.setSpacing(12);w.metric_values={};w.inventory_cards={}
     for key,title in [('Natural diamonds','Natural Diamonds'),('Lab Grown diamonds','Lab Grown Diamonds'),('Sent to DRC','Published Feeds'),('Needs review','Requires Review')]:
         kind = {'Natural diamonds': 'Natural', 'Lab Grown diamonds': 'Lab Grown'}.get(key)
         if kind:
             frame = QPushButton()
+            w.inventory_cards[kind] = frame
             frame.setObjectName('quiet')
             frame.setAccessibleName(title)
             frame.setToolTip(f'View {kind} inventory')
@@ -187,9 +194,9 @@ def build_ui(w):
     w.pages.addWidget(dashboard)
     w.inspect_button=QPushButton('Send once & view response',w);w.inspect_button.hide();w.inspect_button.clicked.connect(w.begin_inspection)
     w.editor=QPlainTextEdit(json.dumps(w.store.get('profiles',[]),indent=2),w);w.editor.hide()
-    config,layout=page();layout.addWidget(label('Connect one Excel workbook per inventory type.','muted'));connections=QHBoxLayout();connections.setSpacing(14);w.connection_labels={}
+    config,layout=page();layout.addWidget(label('Connect one Excel workbook per inventory type.','muted'));connections=QHBoxLayout();connections.setSpacing(14);w.connection_labels={};w.connection_cards={}
     for kind in ('Natural','Lab Grown'):
-        frame,inner=card();title=label(kind+' Diamonds');title.setStyleSheet('font-size:16px;font-weight:600;');inner.addWidget(title)
+        frame,inner=card();w.connection_cards[kind]=frame;title=label(kind+' Diamonds');title.setStyleSheet('font-size:16px;font-weight:600;');inner.addWidget(title)
         info=label('','fileInfo');info.setMinimumHeight(130);info.setTextInteractionFlags(Qt.TextSelectableByMouse);inner.addWidget(info);w.connection_labels[kind]=info
         button=QPushButton('Choose Excel file');button.clicked.connect(lambda checked=False,k=kind:w.add_file(k,persist=True));inner.addWidget(button)
         button=QPushButton('Edit mapping');button.setObjectName('quiet');button.clicked.connect(lambda checked=False,k=kind:w.add_file(k,persist=True,edit=True));inner.addWidget(button);disconnect_btn=QPushButton('Disconnect');disconnect_btn.setObjectName('quiet');disconnect_btn.setStyleSheet('color:#a33b35;border-color:#f5c6c3;');disconnect_btn.clicked.connect(lambda checked=False,k=kind:w.remove_profile(k));inner.addWidget(disconnect_btn);connections.addWidget(frame)

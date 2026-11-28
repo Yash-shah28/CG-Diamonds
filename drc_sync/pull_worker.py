@@ -2,6 +2,7 @@
 import json
 import time
 from pathlib import Path
+from threading import Lock
 from queue import SimpleQueue,Empty
 from PySide6.QtCore import QThread,Signal
 from watchdog.observers import Observer
@@ -14,6 +15,8 @@ from .portal_client import PortalClient,HostingError,DEFAULT_BASE
 from .workbook_errors import workbook_error
 from . import portal_secrets
 from .monitor import Stability
+from .backup import publication_blocked
+from .workspace import FEATURE_FOR_KIND, ScopedPortalClient, cloud_workspace, connection_for, feature_enabled, hosting_settings, portal_client
 from .responses import redact_text
 from .yahoo_mail import MailError, send_invitation, test_smtp_auth
 
@@ -31,7 +34,7 @@ class PullWorker(QThread):
     smtp_test_done = Signal(str)
     natural_validated = Signal(object)
     def __init__(self,dbpath):
-        super().__init__();self.dbpath=dbpath;self.paused=False;self.manual=False;self.requests=SimpleQueue()
+        super().__init__();self.dbpath=dbpath;self.paused=False;self.manual=False;self.requests=SimpleQueue();self.publisher_lock=Lock()
     def request(self,action,value=None):self.requests.put((action,value))
     def parse_profile(self, profile):
         validation = dict(profile)
@@ -55,7 +58,7 @@ class PullWorker(QThread):
     def _validate_company(self,store,c):
         for kind in json.loads(c['kinds']):
             p=next((p for p in store.get('profiles',[]) if p['kind']==kind and p.get('enabled',True)),None)
-            if not p:raise WorkbookValidationError(kind+': connect and enable its Excel workbook first.')
+            if not p or not feature_enabled(store, FEATURE_FOR_KIND[kind]):raise WorkbookValidationError(kind+': connect and enable its Excel workbook first.')
             try:store.cache(p,self.parse_profile(p))
             except Exception as exc:
                 self._report(store,p,exc)
@@ -64,6 +67,8 @@ class PullWorker(QThread):
     def _task(self,store,action,value):
         if action=='prepare':self.process_inspection(store,('prepare',value));return
         if action=='legacy-send':self.inspect_failed.emit('Direct DRC requests are disabled. No request sent.');return
+        if publication_blocked(store):
+            raise HostingError('Publishing stays on the primary PC until the workspace is handed off.', False)
         if action == 'smtp-test':
             try:
                 test_smtp_auth(value.get('sender'), value.get('password'))
@@ -73,15 +78,18 @@ class PullWorker(QThread):
                 self.smtp_test_done.emit('Yahoo Mail login verified.')
             return
         if action=='hosting-test':
-            client=PortalClient(store.get('portal_hosting',{}))
+            client=portal_client(hosting_settings(store), PortalClient)
             try:client.admin()
             finally:client.close()
             self.task_done.emit(action,'Private inventory hosting is ready.');return
         if action in ('email','rotate'):
             c=store.company(value)
             if not c['active']:raise ValueError('This company is revoked. Create new access instead.')
-            sender, app_pw = portal_secrets.get_smtp_credentials()
-            if not sender or not app_pw:
+            if not feature_enabled(store, 'buyer_feeds') or not feature_enabled(store, 'email' if action == 'email' else 'buyer_feeds'):
+                raise ValueError('This feature is disabled for your company.')
+            workspace = cloud_workspace(store)
+            sender, app_pw = (None, None) if workspace else portal_secrets.get_smtp_credentials()
+            if not workspace and (not sender or not app_pw):
                 raise ValueError('Enter your Yahoo email address and app password in Email & Hosting settings before emailing access.')
             self._validate_company(store,c)
             if action=='rotate':store.rotate(value)
@@ -108,9 +116,17 @@ class PullWorker(QThread):
         store.db.execute("UPDATE portal_jobs SET state='publishing' WHERE id=?",(job['id'],));store.db.commit()
         client=None
         try:
-            client=PortalClient(store.get('portal_hosting',{}))
+            client=portal_client(hosting_settings(store), PortalClient)
             if job['action']=='publish':
                 c=store.company(job['client_id'])
+                if isinstance(client, ScopedPortalClient):
+                    try:
+                        remote = client.status(c['id'])
+                    except HostingError as error:
+                        if getattr(error, 'http_status', None) != 404:
+                            raise
+                        remote = {}
+                    client.register_buyer(c, remote.get('key_hash'))
                 result=client.publish(job, company_name=c['name'])
                 if result.get('revision')!=job['revision']:raise HostingError('Hosting did not confirm this feed revision.')
                 store.finish_portal(job,'published','Published to API. Import results from the receiving website are not confirmed.')
@@ -144,20 +160,27 @@ class PullWorker(QThread):
         client=None;dispatched=False
         try:
             from .integration_guide import guide_pdf
-            sender, password = portal_secrets.get_smtp_credentials()
-            if not sender or not password:
+            workspace = cloud_workspace(store)
+            sender, password = (None, None) if workspace else portal_secrets.get_smtp_credentials()
+            if not workspace and (not sender or not password):
                 raise MailError('Configure Yahoo Mail in Email & Hosting settings before emailing access.')
-            client=PortalClient(store.get('portal_hosting',{}))
+            client=portal_client(hosting_settings(store), PortalClient)
             remote=client.status(c['id'])
             if not remote.get('enabled') or remote.get('key_hash')!=c['key_hash'] or remote.get('revision')!=c['revision']:
                 raise ValueError('Current access is not confirmed online. Publish inventory before emailing access.')
             key=portal_secrets.company_key(c['id'],c['key_hash'])
             if not key:raise ValueError('This company key is not available on this PC. Rotate the key before emailing access.')
-            api_url=client.base+'/api/v1/inventory';pdf=guide_pdf(api_url,json.loads(c['kinds']))
+            api_url=(workspace['feed_url'] if workspace else client.base+'/api/v1/inventory');pdf=guide_pdf(api_url,json.loads(c['kinds']))
             store.db.execute("UPDATE portal_companies SET last_email='Sending' WHERE id=?",(c['id'],))
             store.db.execute("UPDATE portal_mail_requests SET state='sending' WHERE client_id=?",(c['id'],));store.db.commit()
             dispatched=True
-            send_invitation(c, key, api_url, pdf, sender=sender, password=password)
+            if workspace:
+                with connection_for(workspace) as connection:
+                    import base64
+                    connection.integration('email', 'send', buyer_id=c['id'], key=key,
+                                           guide=base64.b64encode(pdf).decode('ascii'))
+            else:
+                send_invitation(c, key, api_url, pdf, sender=sender, password=password)
             store.db.execute("UPDATE portal_companies SET last_email='Sent via Yahoo Mail' WHERE id=?",(c['id'],))
             store.history(c['id'],'Email','Sent via Yahoo Mail','Yahoo Mail accepted the invitation. Inbox delivery is not confirmed.')
             self.task_done.emit('email-sent','Invitation accepted by Yahoo Mail for '+c['email'])
@@ -175,8 +198,9 @@ class PullWorker(QThread):
             store.db.execute('DELETE FROM portal_mail_requests WHERE client_id=?',(c['id'],));store.db.commit()
     def pump(self,store):
         try:
-            self.process_jobs(store)
-            if not self.isInterruptionRequested():self.process_email(store)
+            with self.publisher_lock:
+                self.process_jobs(store)
+                if not self.isInterruptionRequested():self.process_email(store)
         except Exception as exc:
             try:store.db.rollback()
             except Exception:pass
@@ -201,7 +225,7 @@ class PullWorker(QThread):
                 force=self.manual;self.manual=False
                 for p in store.get('profiles',[]):
                     if self.isInterruptionRequested():break
-                    if self.paused or not p.get('enabled',True):continue
+                    if self.paused or not p.get('enabled',True) or not feature_enabled(store, FEATURE_FOR_KIND.get(p['kind'])):continue
                     try:
                         path=Path(p['path']).resolve()
                         if str(path.parent) not in watched and path.parent.is_dir():observer.schedule(FileEvents(events),str(path.parent),recursive=False);watched.add(str(path.parent))
@@ -211,13 +235,13 @@ class PullWorker(QThread):
                         if force or signatures.get(name)!=sig:
                             store.cache(p,self.parse_profile(p));signatures[name]=sig
                             store.db.execute("DELETE FROM errors WHERE profile=?", (name,));store.db.commit()
-                            errors=store.queue_for_kind(p['kind'])
+                            errors=[] if publication_blocked(store) else store.queue_for_kind(p['kind'])
                             for detail in errors:self.problem.emit(name,detail)
                             self.changed.emit('Workbook validated: '+path.name)
                             if p['kind'] == 'Natural':
                                 self.natural_validated.emit(p)
                     except Exception as exc:self._report(store,p,exc)
-                if not self.paused and not self.isInterruptionRequested():
+                if not self.paused and not self.isInterruptionRequested() and not publication_blocked(store):
                     self.pump(store)
                 self.msleep(1000)
         finally:observer.stop();observer.join();store.db.close()

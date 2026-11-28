@@ -1,0 +1,11 @@
+**
+!inventory-service/
+!inventory-service/package.json
+!inventory-service/package-lock.json
+!inventory-service/owner/
+!inventory-service/owner/*.js
+!inventory-service/owner/schema.sql
+!inventory-service/owner/download.html
+!inventory-service/owner/update-public-key.pem
+!inventory-service/lib/
+!inventory-service/lib/inventory-service.js

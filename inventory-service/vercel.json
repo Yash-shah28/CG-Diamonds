@@ -1,0 +1,21 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "regions": ["icn1"],
+  "functions": {
+    "api/owner-runtime.js": {
+      "includeFiles": "owner/**",
+      "maxDuration": 120
+    }
+  },
+  "redirects": [
+    { "source": "/", "destination": "/get-app", "permanent": false }
+  ],
+  "rewrites": [
+    { "source": "/owner/:path*", "destination": "/api/owner-runtime?__owner_path=/owner/:path*" },
+    { "source": "/platform/owner", "destination": "/api/owner-runtime?__owner_path=/platform/owner" },
+    { "source": "/get-app", "destination": "/api/owner-runtime?__owner_path=/get-app" },
+    { "source": "/get-app.js", "destination": "/api/owner-runtime?__owner_path=/get-app.js" },
+    { "source": "/healthz", "destination": "/api/owner-runtime?__owner_path=/healthz" }
+  ]
+}

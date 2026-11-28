@@ -3,7 +3,8 @@ import os
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal, QTimer, QObject, Qt
 from PySide6.QtWidgets import QMessageBox
-from .updater import latest, download, update_client, launch_installer
+from .updater import latest, latest_private, download, update_client, launch_installer
+from .workspace import workspace_context
 from .version import VERSION
 
 
@@ -11,14 +12,15 @@ class UpdateTask(QThread):
     result = Signal(object, object)
     failed = Signal(str)
 
-    def __init__(self, folder, parent=None, download_installer=True):
+    def __init__(self, folder, parent=None, download_installer=True, workspace=None):
         super().__init__(parent); self.folder = folder
         self.download_installer = download_installer
+        self.workspace = workspace
 
     def run(self):
         try:
             with update_client() as client:
-                release = latest(client)
+                release = latest_private(self.workspace) if self.workspace else latest(client)
                 path = download(client, release, self.folder) if release and self.download_installer else None
             self.result.emit(release, path)
         except Exception as exc:
@@ -56,9 +58,14 @@ class UpdateController(QObject):
         if self.ready:
             return
         self.manual = manual
+        workspace = workspace_context(self.window.store)
+        if not workspace:
+            if manual:
+                QMessageBox.information(self.window, 'Private updates', 'Sign in from Owner workspace to check your assigned updates.')
+            return
         self.window.update_button.setText('Checking for updates…')
         self.window.update_button.setToolTip("Checking the signed release feed and downloading any newer installer.")
-        self.task = UpdateTask(self.folder, self, download_installer=self.can_install)
+        self.task = UpdateTask(self.folder, self, download_installer=self.can_install, workspace=workspace)
         self.task.result.connect(self.received); self.task.failed.connect(self.failed)
         self.task.start()
 
@@ -73,8 +80,9 @@ class UpdateController(QObject):
             self.window.update_button.setText("Check for updates")
             if self.manual:
                 QMessageBox.information(self.window, "Update available",
-                    "Version "+release["version"]+" is available. You are running the Python source version. "
-                    "Download the Windows installer from https://chintamani-updates.vercel.app/api/download to install it.")
+                    "Version "+release["version"]+" is available. You are running the Python source version. " +
+                    ("Sign in to your company’s private installer page to install it." if release.get('private') else
+                     "Download the Windows installer from https://chintamani-updates.vercel.app/api/download to install it."))
             return
         self.ready = (release, path)
         self.window.update_button.setText('Install update '+release['version'])

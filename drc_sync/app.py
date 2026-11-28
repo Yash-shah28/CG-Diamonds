@@ -5,6 +5,7 @@ import sys
 import time
 from queue import SimpleQueue, Empty
 from pathlib import Path
+from threading import Thread
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from PySide6.QtCore import QLockFile, QThread, Signal, QTimer, Qt
@@ -27,6 +28,12 @@ from .contract import (
 from .responses import response_description, redact_text
 from .diagnostics import failure_detail, run_preflight
 from .workbook_errors import workbook_error
+from . import portal_secrets
+from .sign_in import OwnerSignIn
+from .backup_worker import BackupWorker
+from .workspace import WorkspaceClient, cloud_workspace, configuration, connection_for, feature_enabled, token_slot
+
+SIGN_IN_AGAIN = 70
 
 class Events(FileSystemEventHandler):
     def __init__(self, wake):
@@ -64,6 +71,7 @@ class Window(QMainWindow):
         self.worker.inspection_problem.connect(self.inspection_problem)
         self.worker.diagnostics_ready.connect(self.show_diagnostics)
         build_ui(self)
+        self.apply_workspace_features()
         self.worker.natural_validated.connect(self.rapaport_page.queue_auto_upload)
         self.tray = QSystemTrayIcon(app_icon(), self)
         self.tray.setToolTip('Chintamani Gems - Inventory Studio')
@@ -75,6 +83,41 @@ class Window(QMainWindow):
         self.tray.messageClicked.connect(lambda:self.show_latest_issue())
         self.timer = QTimer(self); self.timer.timeout.connect(self.refresh); self.timer.start(3000)
         self.worker.start(); self.refresh()
+        self.backup_worker = BackupWorker(dbpath, self)
+        self.backup_worker.restored.connect(self.reload_workspace_backup)
+        self.backup_worker.finished.connect(self.rapaport_page.refresh_source)
+        self.backup_timer = QTimer(self)
+        self.backup_timer.timeout.connect(self.start_workspace_backup)
+        self.backup_timer.start(5 * 60 * 1000)
+        QTimer.singleShot(0, self, self.start_workspace_backup)
+
+    def start_workspace_backup(self):
+        if (self.backup_timer.isActive() and configuration(self.store).get('backup_enabled')
+                and not self.backup_worker.isRunning()):
+            self.backup_worker.start()
+
+    def reload_workspace_backup(self):
+        self.reload_profiles()
+        self.refresh()
+        self.rebuild_rates()
+        self.rapaport_page.refresh_source()
+    def apply_workspace_features(self):
+        for index in (2, 3):
+            self.nav_buttons[index].setVisible(feature_enabled(self.store, 'buyer_feeds'))
+        self.nav_buttons[5].setVisible(feature_enabled(self.store, 'rapaport'))
+        for kind, feature in (('Natural', 'natural'), ('Lab Grown', 'lab_grown')):
+            enabled = feature_enabled(self.store, feature)
+            self.inventory_cards[kind].setVisible(enabled)
+            self.connection_cards[kind].setVisible(enabled)
+        if self.pages.currentIndex() in (2, 3, 5) and self.nav_buttons[self.pages.currentIndex()].isHidden():
+            self.navigate(0)
+
+    def save_workspace_profiles(self, profiles):
+        info = cloud_workspace(self.store)
+        if info:
+            with connection_for(info) as client:
+                client.call('PUT', '/owner/settings', {'profiles': profiles})
+
     def navigate(self, index):
         self.pages.setCurrentIndex(index); self.page_title.setText(self.page_names[index])
         for number, button in enumerate(self.nav_buttons):
@@ -374,6 +417,7 @@ class Window(QMainWindow):
                 if has_duplicate_mapping_fields(p['mapping'], allow_multiple_images=True):
                     raise ValueError()
                 p['mapping'] = {column: inventory_mapping_field(field) for column, field in p['mapping'].items()}
+            self.save_workspace_profiles(profiles)
             self.store.set('profiles', profiles)
             self.update_status('Profiles saved')
             return True
@@ -388,6 +432,11 @@ class Window(QMainWindow):
         if QMessageBox.question(self, f'Disconnect {kind}', f'Disconnect {kind} Diamonds Excel workbook?\nYou can reconnect it anytime.') != QMessageBox.Yes:
             return
         profiles = [p for p in profiles if p.get('kind') != kind]
+        try:
+            self.save_workspace_profiles(profiles)
+        except Exception:
+            QMessageBox.warning(self, 'Workspace settings', 'Could not save the workspace changes. Try again.')
+            return
         self.store.set('profiles', profiles)
         self.store.db.execute('DELETE FROM portal_cache WHERE kind=?', (kind,))
         self.store.db.execute("DELETE FROM errors WHERE profile=?", (existing.get('id', ''),))
@@ -546,6 +595,79 @@ class Window(QMainWindow):
         self.worker.requestInterruption(); self.worker.wait(2000); self.tray.hide(); QApplication.quit()
         return True
 
+    def sign_out_owner(self):
+        if self.rapaport_page.busy or not self.worker.publisher_lock.acquire(blocking=False):
+            return False
+        try:
+            origin = configuration(self.store)['origin']
+            slot = token_slot(origin)
+            token = portal_secrets.get_secret(slot)
+            portal_secrets.remove_secret(slot)
+            self.worker.requestInterruption()
+        finally:
+            self.worker.publisher_lock.release()
+        if token:
+            Thread(target=end_owner_session, args=(origin, token), daemon=True).start()
+        self.tray.hide()
+        self.hide()
+        self.backup_timer.stop()
+        QTimer.singleShot(0, lambda: QApplication.exit(SIGN_IN_AGAIN))
+        return True
+
+
+def end_owner_session(origin, token):
+    try:
+        with WorkspaceClient(origin, token, timeout=5) as client:
+            client.call('POST', '/owner/sign-out')
+    except Exception:
+        # Local sign-out also works when the workspace server is unreachable.
+        pass
+
+
+def run_authenticated_desktop(app, instance, dbpath, startup):
+    while True:
+        store = Store(dbpath)
+        login = OwnerSignIn(store)
+        instance.activated.connect(login.restore_window)
+        try:
+            authenticated = login.exec() == QDialog.Accepted
+        finally:
+            instance.activated.disconnect(login.restore_window)
+            store.db.close()
+            login.deleteLater()
+        if not authenticated:
+            return
+
+        window = Window(dbpath)
+        if os.environ.get('CHINTAMANI_DISABLE_UPDATES') != '1':
+            from .update_ui import UpdateController
+            window.updater = UpdateController(window, dbpath.parent/'updates', can_install=bool(getattr(sys, 'frozen', False)))
+        else:
+            window.update_button.setEnabled(False)
+            window.update_button.setToolTip('Updates are disabled for this test session.')
+        if not startup or not QSystemTrayIcon.isSystemTrayAvailable():
+            window.show()
+        instance.activated.connect(window.open_window)
+        try:
+            exit_code = app.exec()
+        finally:
+            instance.activated.disconnect(window.open_window)
+            if hasattr(window, 'updater'):
+                window.updater.stop()
+            window.backup_timer.stop()
+            for worker in (window.worker, getattr(window, '_activity_worker', None), window.backup_worker):
+                if worker and worker.isRunning():
+                    worker.requestInterruption()
+                    worker.wait()
+            window.timer.stop()
+            window.tray.hide()
+            window.hide()
+            window.store.db.close()
+            window.deleteLater()
+        if exit_code != SIGN_IN_AGAIN:
+            return
+        startup = False
+
 def main():
     if '--provision-credentials' in sys.argv or '--credential-self-test' in sys.argv:
         raise SystemExit(2)  # Legacy DRC provisioning is intentionally disabled.
@@ -595,30 +717,17 @@ def main():
     root = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'DRCInventorySync'
     root.mkdir(parents=True,exist_ok=True)
     instance = Instance(root)
-    if not instance.acquire():
-        if not instance.notify():
-            QMessageBox.information(None, 'App is starting', 'The app is still starting or an older version is running. Open it from the Chintamani Gems tray icon, or exit that copy and reopen this version.')
-        return
-    window = Window(root/'sync.db')
-    if os.environ.get('CHINTAMANI_DISABLE_UPDATES') != '1':
-        from .update_ui import UpdateController
-        window.updater = UpdateController(window, root/'updates', can_install=bool(getattr(sys, 'frozen', False)))
-    else:
-        window.update_button.setEnabled(False)
-        window.update_button.setToolTip('Updates are disabled for this test session.')
-    if not startup or not QSystemTrayIcon.isSystemTrayAvailable(): window.show()
-    instance.activated.connect(window.open_window)
     try:
-        app.exec()
+        if not instance.acquire():
+            if not instance.notify():
+                QMessageBox.information(None, 'App is starting', 'The app is still starting or an older version is running. Open it from the Chintamani Gems tray icon, or exit that copy and reopen this version.')
+            return
+        try:
+            run_authenticated_desktop(app, instance, root/'sync.db', startup)
+        finally:
+            instance.close()
     finally:
-        if hasattr(window, 'worker') and window.worker.isRunning():
-            window.worker.requestInterruption()
-            window.worker.wait(2000)
-        act_w = getattr(window, '_activity_worker', None)
-        if act_w and act_w.isRunning():
-            act_w.requestInterruption()
-            act_w.wait(2000)
-        instance.close()
-        if mutex: ctypes.windll.kernel32.CloseHandle(mutex)
+        if mutex:
+            ctypes.windll.kernel32.CloseHandle(mutex)
 
 if __name__ == '__main__': main()

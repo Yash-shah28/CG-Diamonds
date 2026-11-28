@@ -9,6 +9,9 @@ from PySide6.QtWidgets import QCheckBox, QFormLayout, QHBoxLayout, QLineEdit, QM
 
 from . import portal_secrets
 from .rapaport import RapaportClient, RapaportError, prepare_natural_upload
+from .inventory_excel import workbook_stamp
+from .portal_client import HostingError
+from .workspace import connection_for, provider_workspace
 from .responses import redact_text
 from .ui import card, label
 from .workbook_errors import workbook_error
@@ -34,6 +37,9 @@ class _Task(QThread):
         except RapaportError as error:
             self.error = str(error)
             self.uncertain = error.uncertain
+        except HostingError as error:
+            self.error = str(error)
+            self.uncertain = self.action == 'upload' and error.retryable
         except Exception:
             self.error = 'The Rapaport operation could not be completed.'
             self.uncertain = self.action == 'upload'
@@ -133,7 +139,10 @@ class RapaportPage(QWidget):
                      if profile.get('kind') == 'Natural' and profile.get('path')), None)
 
     def account_ref(self):
-        identifier = self.credentials.get('client_id', '')
+        workspace = provider_workspace(self.store, 'rapaport')
+        if workspace and workspace.get('provider_refs', {}).get('rapaport'):
+            return workspace['provider_refs']['rapaport']
+        identifier = workspace['id'] if workspace else self.credentials.get('client_id', '')
         return hashlib.sha256(identifier.encode()).hexdigest()
 
     def last_upload(self):
@@ -147,6 +156,9 @@ class RapaportPage(QWidget):
         return self.store.get(self.pending_dispatch_key(), {})
 
     def credentials_ready(self):
+        workspace = provider_workspace(self.store, 'rapaport')
+        if workspace:
+            return 'rapaport' in workspace.get('providers', []) and 'rapaport' in workspace.get('features', [])
         return (bool(self.credentials) and self.client_id.text().strip() == self.credentials['client_id']
                 and not self.client_secret.text())
 
@@ -207,8 +219,11 @@ class RapaportPage(QWidget):
     def update_buttons(self):
         upload = self.last_upload()
         enabled = not self.busy
+        workspace = provider_workspace(self.store, 'rapaport')
         for widget in (self.client_id, self.client_secret, self.save_button):
-            widget.setEnabled(enabled)
+            widget.setEnabled(enabled and not workspace)
+        if workspace:
+            self.client_id.setPlaceholderText('Managed in Owner workspace')
         saved = self.credentials_ready()
         self.test_button.setEnabled(enabled and saved)
         self.auto_upload.setEnabled(saved and bool(self.natural_profile()) and enabled)
@@ -270,7 +285,11 @@ class RapaportPage(QWidget):
         self._start(action, message, request)
 
     def test_connection(self):
+        workspace = provider_workspace(self.store, 'rapaport')
         def test(http, credentials):
+            if workspace:
+                with connection_for(workspace, http) as client:
+                    return client.integration('rapaport', 'test')
             self.client.clear_token()
             self.client.login(http, credentials)
 
@@ -322,13 +341,26 @@ class RapaportPage(QWidget):
             self._auto_digest = digest
         self.store.set(self.pending_dispatch_key(), {'digest': digest})
         message = 'Automatically uploading Natural inventory…' if automatic else 'Submitting the Natural inventory…'
-        self._start_network('upload', message, lambda http, credentials: self.client.upload(http, credentials, prepared))
+        workspace = provider_workspace(self.store, 'rapaport')
+        def upload(http, credentials):
+            if workspace:
+                if workbook_stamp(prepared.path) != prepared.stamp:
+                    raise RapaportError('The Natural workbook changed. Prepare the upload again.')
+                with connection_for(workspace, http) as client:
+                    return client.upload_rapaport(prepared.content)
+            return self.client.upload(http, credentials, prepared)
+        self._start_network('upload', message, upload)
 
     def check_status(self):
         uid = self.last_upload().get('id')
         if uid:
-            self._start_network('status', 'Checking Rapaport upload status…',
-                                lambda http, credentials: self.client.status(http, credentials, uid))
+            workspace = provider_workspace(self.store, 'rapaport')
+            def status(http, credentials):
+                if workspace:
+                    with connection_for(workspace, http) as client:
+                        return client.integration('rapaport', 'status', upload_id=uid)
+                return self.client.status(http, credentials, uid)
+            self._start_network('status', 'Checking Rapaport upload status…', status)
 
     @Slot()
     def finish(self):
@@ -389,4 +421,3 @@ class RapaportPage(QWidget):
                 messages.extend(item for item in value if isinstance(item, str))
         result['messages'] = redact_text('\n'.join(messages[:8]), secrets)[:1200]
         self.store.set(UPLOAD_SETTING, result)
-

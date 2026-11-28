@@ -10,6 +10,15 @@ def get_secret(slot):
 def put_secret(slot, value):
     WinVaultKeyring().set_password(SERVICE, slot, value)
 
+def remove_secret(slot):
+    from keyring.errors import PasswordDeleteError
+
+    try:
+        WinVaultKeyring().delete_password(SERVICE, slot)
+    except PasswordDeleteError:
+        pass
+
+
 def company_slot(client_id, key_hash):
     if not re.fullmatch('[a-f0-9]{32}', client_id) or not re.fullmatch('[a-f0-9]{64}', key_hash):
         raise ValueError('Invalid company credential reference')

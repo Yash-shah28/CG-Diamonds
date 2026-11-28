@@ -10,6 +10,7 @@ from .dashboard import history_cutoff
 from .portal_client import DEFAULT_BASE,clean_base
 from . import portal_secrets
 from .yahoo_mail import MailError, validate_credentials
+from .workspace import cloud_workspace, hosting_settings as workspace_hosting_settings, portal_client
 
 
 # ── column indices ──────────────────────────────────────────────
@@ -120,7 +121,7 @@ class ActivityFetchWorker(QThread):
 
     def run(self):
         try:
-            client = PortalClient(self.settings)
+            client = portal_client(self.settings, PortalClient)
             try:
                 try:
                     self.audit_updated.emit(client.auth_audits(self.audit_cursor))
@@ -175,7 +176,7 @@ class FeedbackFetchThread(QThread):
         self.client_id = client_id
     def run(self):
         try:
-            client = PortalClient(self.settings)
+            client = portal_client(self.settings, PortalClient)
             try:
                 res = client.status(self.client_id)
                 self.finished.emit(res, '')
@@ -307,7 +308,7 @@ def show_feedback_dialog(w, company_id):
     btn_row.addWidget(close_btn)
     layout.addLayout(btn_row)
 
-    thread = FeedbackFetchThread(w.store.get('portal_hosting', {}), company_id)
+    thread = FeedbackFetchThread(workspace_hosting_settings(w.store), company_id)
     def on_fetched(res, err):
         if err:
             status_lbl.setText(f"Could not load data from cloud: {err}")
@@ -661,6 +662,9 @@ def revoke(w):
         w.worker.request('revoke',c['id'])
 
 def hosting_settings(w):
+    if cloud_workspace(w.store):
+        QMessageBox.information(w, 'Owner workspace', 'Manage email and hosting access from Owner workspace.')
+        return
     d=QDialog(w);d.setWindowTitle('Email & Hosting Settings');d.resize(650,560);layout=dialog_layout(d)
     tabs=QTabWidget();layout.addWidget(tabs,1)
     
@@ -796,7 +800,7 @@ def start_activity_refresh(w, force=False, audit_cursor=None):
     if old_worker and old_worker.isRunning():
         return
 
-    hosting = w.store.get('portal_hosting', {})
+    hosting = workspace_hosting_settings(w.store)
     cids = getattr(w, 'client_ids', [])
     if not cids and not hosting.get("base_url"):
         return

@@ -46,6 +46,7 @@ def show_workbook_inventory(parent, profile):
     from .workbook_errors import workbook_error
     from .inventory_edit_ui import import_hrd_report, save_excel_copy
     from .inventory_excel import workbook_stamp
+    from .workspace import feature_enabled
 
     title = f"{profile['kind']} Diamonds"
     def read_table():
@@ -200,7 +201,10 @@ def show_workbook_inventory(parent, profile):
     import_button.setObjectName('quiet')
     import_button.clicked.connect(import_report)
     toolbar.addStretch()
-    toolbar.addWidget(import_button)
+    if not hasattr(parent, 'store') or feature_enabled(parent.store, 'hrd'):
+        toolbar.addWidget(import_button)
+    else:
+        import_button.hide()
     toolbar.addWidget(download_button)
     layout.addLayout(toolbar)
     layout.addWidget(table, 1)

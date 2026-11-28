@@ -52,17 +52,22 @@ def trusted_url(url):
     return url
 
 
-def verify_manifest(envelope, public_key=None):
+def verify_manifest(envelope, public_key=None, *, private=False):
     try:
         payload = base64.b64decode(envelope['payload'], validate=True)
         signature = base64.b64decode(envelope['signature'], validate=True)
         key = public_key or (Path(__file__).parent/'assets/update-public-key.pem').read_bytes()
         load_pem_public_key(key).verify(signature, payload)
         release = json.loads(payload)
-        if release['schema'] != 1 or release['app'] != 'chintamani-gems' or release['platform'] != 'windows-x64':
+        if release['schema'] != (2 if private else 1) or release['app'] != 'chintamani-gems' or release['platform'] != 'windows-x64':
             raise UpdateError('Release is for a different application or platform')
         version_tuple(release['version'])
-        trusted_url(release['url'])
+        if private:
+            version = release['version']
+            if release.get('object_key') != f'private-releases/{version}/ChintamaniGemsSetup-{version}.exe':
+                raise UpdateError('Invalid private installer key')
+        else:
+            trusted_url(release['url'])
         if type(release['size']) is not int or not 0 < release['size'] <= MAX_INSTALLER:
             raise UpdateError('Invalid installer size')
         if not re.fullmatch(r'[a-f0-9]{64}', release['sha256']):
@@ -90,6 +95,19 @@ def latest(client, current=VERSION):
     return release if version_tuple(release['version']) > version_tuple(current) else None
 
 
+def latest_private(workspace, current=VERSION):
+    from .workspace import connection_for, trusted_signed_url
+
+    with connection_for(workspace) as connection:
+        response = connection.call('GET', '/owner/releases?current=' + current)
+    if not response:
+        return None
+    release = verify_manifest(response['envelope'], private=True)
+    if version_tuple(release['version']) <= version_tuple(current):
+        return None
+    return {**release, 'url': trusted_signed_url(response['download_url']), 'private': True}
+
+
 def file_matches(path, release):
     path = Path(path)
     if not path.is_file() or path.stat().st_size != release['size']:
@@ -102,7 +120,11 @@ def file_matches(path, release):
 
 
 def download(client, release, folder):
-    trusted_url(release['url'])
+    if release.get('private'):
+        from .workspace import trusted_signed_url
+        trusted_signed_url(release['url'])
+    else:
+        trusted_url(release['url'])
     folder = Path(folder); folder.mkdir(parents=True, exist_ok=True)
     target = folder/f"ChintamaniGemsSetup-{release['version']}.exe"
     if file_matches(target, release):

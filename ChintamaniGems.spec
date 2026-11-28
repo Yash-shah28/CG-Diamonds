@@ -1,7 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
+from os import environ
+from pathlib import Path
+from PyInstaller.config import CONF
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('drc_sync/assets', 'drc_sync/assets')]
+owner_origin = environ.get('CHINTAMANI_WORKSPACE_ORIGIN', '').strip()
+if owner_origin:
+    workspace_config = Path(CONF['workpath']) / 'owner-workspace-origin.txt'
+    workspace_config.write_text(owner_origin, encoding='utf-8')
+    datas.append((str(workspace_config), 'drc_sync/assets'))
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('keyring')
@@ -25,7 +33,6 @@ a = Analysis(
 a.binaries = [item for item in a.binaries if item[0].replace('\\', '/').split('/')[-1].lower() != 'icuuc.dll']
 # Some managed Python runtimes load this policy file inside SSLContext.__new__.
 # Preserve the runtime's certificate policy beside frozen ssl.py; never disable TLS verification.
-from pathlib import Path
 import ssl
 ssl_policy = Path(ssl.__file__).with_name('codex-rejected-cas.pem')
 if ssl_policy.is_file():
@@ -59,5 +66,3 @@ coll = COLLECT(
     upx_exclude=[],
     name='ChintamaniGems',
 )
-
-
