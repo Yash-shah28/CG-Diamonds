@@ -52,6 +52,37 @@ def test_natural_csv_uses_source_prices_and_rapaport_field_formats(natural):
     assert 'Cost Price' not in stone
 
 
+@pytest.mark.parametrize(('source', 'expected'), [
+    (105.49, '105'),
+    (105.4999, '105'),
+    (104.50, '105'),
+    (105.50, '106'),
+    (105.51, '106'),
+    (0.50, '1'),
+])
+def test_rapaport_rounds_price_per_carat_half_up(natural, source, expected):
+    from openpyxl import load_workbook
+
+    with_price = load_workbook(natural['path'])
+    with_price.active['F2'] = source
+    with_price.save(natural['path'])
+    with_price.close()
+    upload = prepare_natural_upload(natural)
+    stone, = csv.DictReader(StringIO(upload.content.decode()))
+    assert stone['PricePerCarat'] == expected
+
+
+def test_rapaport_rejects_price_that_rounds_to_zero(natural):
+    from openpyxl import load_workbook
+
+    with_price = load_workbook(natural['path'])
+    with_price.active['F2'] = 0.49
+    with_price.save(natural['path'])
+    with_price.close()
+    with pytest.raises(WorkbookValidationError, match='at least one dollar'):
+        prepare_natural_upload(natural)
+
+
 def test_rapaport_rejects_lab_grown_and_unmapped_type_column(natural):
     from openpyxl import load_workbook
     with pytest.raises(WorkbookValidationError, match='Natural workbook'):
